@@ -54,10 +54,13 @@ void resetDevice()
 
 void setScanList(String cmd)
 {
-  scanCount = 0;
+   scanCount = 0;
 
   int start = cmd.indexOf('@');
   int end = cmd.indexOf(')');
+
+  if(start == -1 || end == -1)
+    return; // protezione
 
   String list = cmd.substring(start+1,end);
 
@@ -204,12 +207,6 @@ void processCommand(String cmd)
   measAll(Serial);
   return;
 }
-if(cmd.startsWith("ROUT:SCAN"))
-{
-  setScanList(cmd);
-  Serial.println("OK");
-  return;
-}
 if(cmd == "ROUT:SCAN?")
 {
   for(int i=0;i<scanCount;i++)
@@ -220,6 +217,14 @@ if(cmd == "ROUT:SCAN?")
   Serial.println();
   return;
 }
+
+if(cmd.startsWith("ROUT:SCAN"))
+{
+  setScanList(cmd);
+  Serial.println("OK");
+  return;
+}
+
 
 
 if(cmd == "READ?")
