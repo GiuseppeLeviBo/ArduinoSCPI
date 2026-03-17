@@ -61,18 +61,34 @@ void setScanList(String cmd)
 
   String list = cmd.substring(start+1,end);
 
-  int i = 0;
-  while(i < list.length())
+  if(list.indexOf(':') != -1)
   {
-    int comma = list.indexOf(',',i);
-    if(comma == -1) comma = list.length();
+    int colon = list.indexOf(':');
 
-    int ch = list.substring(i,comma).toInt();
+    int ch_start = list.substring(0,colon).toInt();
+    int ch_end   = list.substring(colon+1).toInt();
 
-    if(ch>=0 && ch<=5)
-      scanList[scanCount++] = ch;
+    for(int ch = ch_start; ch <= ch_end; ch++)
+    {
+      if(ch>=0 && ch<=5)
+        scanList[scanCount++] = ch;
+    }
+  }
+  else
+  {
+    int i = 0;
+    while(i < list.length())
+    {
+      int comma = list.indexOf(',',i);
+      if(comma == -1) comma = list.length();
 
-    i = comma+1;
+      int ch = list.substring(i,comma).toInt();
+
+      if(ch>=0 && ch<=5)
+        scanList[scanCount++] = ch;
+
+      i = comma+1;
+    }
   }
 }
 
