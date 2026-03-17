@@ -183,6 +183,40 @@ void processCommand(String cmd)
     return;
   }
 
+  if(cmd == "MEAS:VOLT:ALL?")
+{
+  measAll(Serial);
+  return;
+}
+if(cmd.startsWith("ROUT:SCAN"))
+{
+  setScanList(cmd);
+  Serial.println("OK");
+  return;
+}
+if(cmd == "ROUT:SCAN?")
+{
+  for(int i=0;i<scanCount;i++)
+  {
+    Serial.print(scanList[i]);
+    if(i<scanCount-1) Serial.print(",");
+  }
+  Serial.println();
+  return;
+}
+
+
+if(cmd == "READ?")
+{
+  if(scanCount == 0)
+  {
+    Serial.println("ERR"); // nessuna scan list
+    return;
+  }
+
+  readScan(Serial);
+  return;
+}
   /* DIG:OUT */
 
   if(cmd.startsWith("DIG:OUT "))
