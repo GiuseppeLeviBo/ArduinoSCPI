@@ -23,12 +23,13 @@ Servo servos[2];
 uint8_t scanList[6];
 uint8_t scanCount = 0;
 
-enum TriggerMode {TRIG_IMM, TRIG_ANA};
+enum TriggerMode {TRIG_IMM, TRIG_ANA, TRIG_DIG}; // Aggiunto TRIG_DIG
 TriggerMode trigMode = TRIG_IMM;
 
 float trigLevel = 2.5;
 unsigned long trigTimeout = 1000;
-
+int trigAnalogChannel = 0;   // Default A0
+int trigDigitalChannel = 0;  // Default primo pin digitale (pin 2)
 /* ---------- Utility ---------- */
 
 bool isValidAnalogChannel(int ch)
@@ -108,7 +109,11 @@ float readVolt(uint8_t ch)
 void resetDevice()
 {
   currentAnalogChannel = 0;
-
+  trigMode = TRIG_IMM;   // Aggiunto per correttezza SCPI
+  trigLevel = 2.5;       // Aggiunto per correttezza SCPI
+  trigTimeout = 1000;    // Reset del timeout a 1 secondo
+  trigAnalogChannel = 0;     // Reset
+  trigDigitalChannel = 0;    // Reset
   for(uint8_t i = 0; i < pwmPinCount; i++)
   {
     if(servoAttached[i])
@@ -172,29 +177,37 @@ void setScanList(String cmd)
   }
 }
 
-
 bool waitTrigger()
 {
-  // Se è immediato, restituisci subito true
   if(trigMode == TRIG_IMM) return true;
+
+  unsigned long startMillis = millis();
 
   if(trigMode == TRIG_ANA)
   {
-    unsigned long startMillis = millis(); // Salva il tempo di inizio
-
-    // Continua finché non scade il timeout
     while(millis() - startMillis < trigTimeout)
     {
-      float v = readVolt(0); // trigger su A0
+      // Legge dal canale analogico configurato
+      float v = readVolt(trigAnalogChannel); 
 
       if(v >= trigLevel)
-        return true; // Trigger superato, usciamo con successo
+        return true; 
     }
-    
-    return false; // Il ciclo è finito senza superare il livello = Timeout!
   }
-  
-  return false; // Fallback di sicurezza
+  else if(trigMode == TRIG_DIG)
+  {
+    // Se trigLevel >= 0.5 vogliamo il trigger su segnale HIGH, altrimenti su LOW
+    int expectedState = (trigLevel >= 0.5) ? HIGH : LOW;
+
+    while(millis() - startMillis < trigTimeout)
+    {
+      // Legge dal pin digitale configurato
+      if(digitalRead(digitalPins[trigDigitalChannel]) == expectedState)
+        return true;
+    }
+  }
+
+  return false; // Timeout
 }
 
 void measAll(Stream &interface)
@@ -490,12 +503,14 @@ void processCommand(String cmd)
     return;
   }
 
-  if(cmd.startsWith("TRIG:SOUR "))
+if(cmd.startsWith("TRIG:SOUR "))
   {
     if(cmd.endsWith("IMM"))
       trigMode = TRIG_IMM;
     else if(cmd.endsWith("ANA"))
       trigMode = TRIG_ANA;
+    else if(cmd.endsWith("DIG")) // <-- AGGIUNTO
+      trigMode = TRIG_DIG;
     else
     {
       Serial.println("ERR");
@@ -508,14 +523,61 @@ void processCommand(String cmd)
 
   if(cmd == "TRIG:SOUR?")
   {
-    if(trigMode == TRIG_IMM)
-      Serial.println("IMM");
-    else
-      Serial.println("ANA");
-
+    if(trigMode == TRIG_IMM) Serial.println("IMM");
+    else if(trigMode == TRIG_ANA) Serial.println("ANA");
+    else Serial.println("DIG"); // <-- AGGIUNTO
     return;
   }
 
+/* TRIG:CHAN <ch> - Imposta il canale di trigger */
+  if(cmd.startsWith("TRIG:CHAN "))
+  {
+    String token = cmd.substring(10);
+    token.trim();
+
+    if(trigMode == TRIG_ANA)
+    {
+      int ch = parseChannel(token);
+      if(isValidAnalogChannel(ch))
+      {
+        trigAnalogChannel = ch;
+        Serial.println("OK");
+        return;
+      }
+    }
+    else if(trigMode == TRIG_DIG)
+    {
+      int ch = -1;
+      // Usiamo resolveDigitalChannel così accetta sia "D2" che l'indice "0"
+      if(resolveDigitalChannel(token, ch))
+      {
+        trigDigitalChannel = ch;
+        // FONDAMENTALE: Trasforma il pin in INGRESSO per poter leggere il segnale esterno
+        pinMode(digitalPins[ch], INPUT); 
+        Serial.println("OK");
+        return;
+      }
+    }
+    else
+    {
+      // Se si prova a cambiare canale in modalità IMMediate, dà errore
+      Serial.println("ERR:MODE"); 
+      return;
+    }
+
+    Serial.println("ERR");
+    return;
+  }
+
+  /* TRIG:CHAN? */
+  if(cmd == "TRIG:CHAN?")
+  {
+    if(trigMode == TRIG_ANA) Serial.println(trigAnalogChannel);
+    else if(trigMode == TRIG_DIG) Serial.println(trigDigitalChannel);
+    else Serial.println("NONE");
+    return;
+  }
+  
   if(cmd.startsWith("TRIG:LEV "))
   {
     trigLevel = cmd.substring(9).toFloat();
@@ -552,6 +614,7 @@ void processCommand(String cmd)
     Serial.println(trigTimeout);
     return;
   }
+  
   Serial.println("ERR");
 }
 
