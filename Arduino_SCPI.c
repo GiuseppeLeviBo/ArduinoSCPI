@@ -27,6 +27,7 @@ enum TriggerMode {TRIG_IMM, TRIG_ANA};
 TriggerMode trigMode = TRIG_IMM;
 
 float trigLevel = 2.5;
+unsigned long trigTimeout = 1000;
 
 /* ---------- Utility ---------- */
 
@@ -172,20 +173,28 @@ void setScanList(String cmd)
 }
 
 
-void waitTrigger()
+bool waitTrigger()
 {
-  if(trigMode == TRIG_IMM) return;
+  // Se è immediato, restituisci subito true
+  if(trigMode == TRIG_IMM) return true;
 
   if(trigMode == TRIG_ANA)
   {
-    while(true)
+    unsigned long startMillis = millis(); // Salva il tempo di inizio
+
+    // Continua finché non scade il timeout
+    while(millis() - startMillis < trigTimeout)
     {
       float v = readVolt(0); // trigger su A0
 
       if(v >= trigLevel)
-        break;
+        return true; // Trigger superato, usciamo con successo
     }
+    
+    return false; // Il ciclo è finito senza superare il livello = Timeout!
   }
+  
+  return false; // Fallback di sicurezza
 }
 
 void measAll(Stream &interface)
@@ -203,8 +212,14 @@ void measAll(Stream &interface)
 
 void readScan(Stream &interface)
 {
-  waitTrigger();
+  // Se il trigger fallisce per timeout, stampa un errore e interrompi
+  if(!waitTrigger()) 
+  {
+    interface.println("ERR:TIMEOUT");
+    return;
+  }
 
+  // Se siamo qui, il trigger è scattato correttamente
   for(int i=0;i<scanCount;i++)
   {
     float v = readVolt(scanList[i]);
@@ -513,7 +528,30 @@ void processCommand(String cmd)
     Serial.println(trigLevel,3);
     return;
   }
+/* TRIG:TOUT (Imposta il timeout del trigger in millisecondi) */
+  if(cmd.startsWith("TRIG:TOUT "))
+  {
+    // Il comando "TRIG:TOUT " è lungo 10 caratteri. Prendiamo ciò che segue.
+    long parsedTout = cmd.substring(10).toInt();
+    
+    if (parsedTout > 0) // Il timeout deve essere maggiore di zero
+    {
+      trigTimeout = (unsigned long)parsedTout;
+      Serial.println("OK");
+    }
+    else
+    {
+      Serial.println("ERR");
+    }
+    return;
+  }
 
+  /* TRIG:TOUT? (Richiede il timeout attuale) */
+  if(cmd == "TRIG:TOUT?")
+  {
+    Serial.println(trigTimeout);
+    return;
+  }
   Serial.println("ERR");
 }
 
