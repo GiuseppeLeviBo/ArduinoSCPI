@@ -137,7 +137,7 @@ Misura tutti i canali:
 
 | SCPI | Pin   |
 | ---- | ----- |
-| 0–6  | D2–D8 |
+| 0–11 | D2–D12, D13 |
 
 ---
 
@@ -145,10 +145,16 @@ Misura tutti i canali:
 
 Imposta uscita:
 
-```
+``` 
 DIG:OUT 3,1
 DIG:OUT 3,0
+DIG:OUT D13,1
+DIG:OUT D13,0
 ```
+
+`<ch>` è l’indice SCPI. Se vuoi indicare il pin fisico Arduino devi usare la forma esplicita `D<n>`: ad esempio `D9`, `D11`, `D13`. In questo modo `DIG:OUT 9,1` significa sempre **canale SCPI 9**, mentre `DIG:OUT D9,1` significa sempre **pin fisico D9**. Il LED integrato sul pin 13 è quindi controllabile con `DIG:OUT D13,1`.
+
+Le uscite PWM (`D9` e `D10`) fanno parte anche delle uscite digitali generiche: possono quindi essere usate con `DIG:OUT` come normali pin HIGH/LOW oppure con `SOUR:PWM` per pilotarle in modulazione PWM. Anche `D11` e `D12` sono ora inclusi tra le uscite digitali gestite da `DIG:OUT`.
 
 ---
 
@@ -401,5 +407,3 @@ Progetto open source pensato per:
 * scuole
 * università
 * autoapprendimento
-
-
