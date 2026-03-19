@@ -64,21 +64,33 @@ int parseChannel(String value)
 
 bool resolveDigitalChannel(String token, int &channel)
 {
+  token.trim();
+
+  if(token.length() == 0)
+    return false;
+
+  if(token.charAt(0) == 'D' || token.charAt(0) == 'd')
+  {
+    int parsedPin = parseChannel(token.substring(1));
+
+    for(uint8_t i = 0; i < digitalPinCount; i++)
+    {
+      if(parsedPin == digitalPins[i])
+      {
+        channel = i;
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   int parsed = parseChannel(token);
 
   if(isValidDigitalChannel(parsed))
   {
     channel = parsed;
     return true;
-  }
-
-  for(uint8_t i = 0; i < digitalPinCount; i++)
-  {
-    if(parsed == digitalPins[i])
-    {
-      channel = i;
-      return true;
-    }
   }
 
   return false;
