@@ -5,14 +5,18 @@
 /* ---------- Hardware mapping ---------- */
 
 const uint8_t analogPins[6] = {A0,A1,A2,A3,A4,A5};
-const uint8_t digitalPins[7] = {2,3,4,5,6,7,8};
+const uint8_t digitalPins[] = {2,3,4,5,6,7,8,9,10,LED_BUILTIN};
 const uint8_t pwmPins[2] = {9,10};
 
 /* ---------- Stato ---------- */
 
 uint8_t currentAnalogChannel = 0;
-bool digitalState[7];
+const uint8_t digitalPinCount = sizeof(digitalPins) / sizeof(digitalPins[0]);
+bool digitalState[digitalPinCount];
 uint8_t pwmValue[2];
+bool servoAttached[2];
+
+const uint8_t pwmPinCount = sizeof(pwmPins) / sizeof(pwmPins[0]);
 
 Servo servos[2];
 
@@ -26,6 +30,60 @@ float trigLevel = 2.5;
 
 /* ---------- Utility ---------- */
 
+bool isValidAnalogChannel(int ch)
+{
+  return ch >= 0 && ch < 6;
+}
+
+bool isValidDigitalChannel(int ch)
+{
+  return ch >= 0 && ch < digitalPinCount;
+}
+
+bool isValidPwmChannel(int ch)
+{
+  return ch >= 0 && ch < pwmPinCount;
+}
+
+int findPwmChannelByPin(uint8_t pin)
+{
+  for(uint8_t i = 0; i < pwmPinCount; i++)
+  {
+    if(pwmPins[i] == pin)
+      return i;
+  }
+
+  return -1;
+}
+
+int parseChannel(String value)
+{
+  value.trim();
+  return value.toInt();
+}
+
+bool resolveDigitalChannel(String token, int &channel)
+{
+  int parsed = parseChannel(token);
+
+  if(isValidDigitalChannel(parsed))
+  {
+    channel = parsed;
+    return true;
+  }
+
+  for(uint8_t i = 0; i < digitalPinCount; i++)
+  {
+    if(parsed == digitalPins[i])
+    {
+      channel = i;
+      return true;
+    }
+  }
+
+  return false;
+}
+
 float readVolt(uint8_t ch)
 {
   int raw = analogRead(analogPins[ch]);
@@ -38,16 +96,22 @@ void resetDevice()
 {
   currentAnalogChannel = 0;
 
-  for(int i=0;i<7;i++)
+  for(uint8_t i = 0; i < pwmPinCount; i++)
   {
-    digitalState[i]=0;
-    digitalWrite(digitalPins[i],LOW);
+    if(servoAttached[i])
+    {
+      servos[i].detach();
+      servoAttached[i] = false;
+    }
+
+    pwmValue[i] = 0;
+    analogWrite(pwmPins[i], 0);
   }
 
-  for(int i=0;i<2;i++)
+  for(uint8_t i = 0; i < digitalPinCount; i++)
   {
-    pwmValue[i]=0;
-    analogWrite(pwmPins[i],0);
+    digitalState[i] = LOW;
+    digitalWrite(digitalPins[i], LOW);
   }
 }
 
@@ -73,7 +137,7 @@ void setScanList(String cmd)
 
     for(int ch = ch_start; ch <= ch_end; ch++)
     {
-      if(ch>=0 && ch<=5)
+      if(isValidAnalogChannel(ch))
         scanList[scanCount++] = ch;
     }
   }
@@ -87,7 +151,7 @@ void setScanList(String cmd)
 
       int ch = list.substring(i,comma).toInt();
 
-      if(ch>=0 && ch<=5)
+      if(isValidAnalogChannel(ch))
         scanList[scanCount++] = ch;
 
       i = comma+1;
@@ -153,7 +217,7 @@ void processCommand(String cmd)
 
   if(cmd == "*IDN?")
   {
-    Serial.println("OpenSCPI-Lab,Arduino-UNO,1.0");
+    Serial.println("OpenSCPI-Lab,Arduino-UNO,1.2");
     return;
   }
 
@@ -166,16 +230,26 @@ void processCommand(String cmd)
     return;
   }
 
+  if(cmd == "CONF:VOLT?")
+  {
+    Serial.println(currentAnalogChannel);
+    return;
+  }
+
   /* CONF:VOLT */
 
   if(cmd.startsWith("CONF:VOLT"))
   {
-    int ch = cmd.substring(9).toInt();
+    int ch = parseChannel(cmd.substring(9));
 
-    if(ch>=0 && ch<=5)
+    if(isValidAnalogChannel(ch))
+    {
       currentAnalogChannel = ch;
+      Serial.println("OK");
+      return;
+    }
 
-    Serial.println("OK");
+    Serial.println("ERR");
     return;
   }
 
@@ -186,7 +260,13 @@ void processCommand(String cmd)
     int ch = currentAnalogChannel;
 
     if(cmd.length()>10)
-      ch = cmd.substring(10).toInt();
+      ch = parseChannel(cmd.substring(10));
+
+    if(!isValidAnalogChannel(ch))
+    {
+      Serial.println("ERR");
+      return;
+    }
 
     Serial.println(readVolt(ch),4);
     return;
@@ -196,64 +276,93 @@ void processCommand(String cmd)
 
   if(cmd.startsWith("MEAS:RAW?"))
   {
-    int ch = cmd.substring(9).toInt();
+    int ch = parseChannel(cmd.substring(9));
+
+    if(!isValidAnalogChannel(ch))
+    {
+      Serial.println("ERR");
+      return;
+    }
+
     int raw = analogRead(analogPins[ch]);
     Serial.println(raw);
     return;
   }
 
   if(cmd == "MEAS:VOLT:ALL?")
-{
-  measAll(Serial);
-  return;
-}
-if(cmd == "ROUT:SCAN?")
-{
-  for(int i=0;i<scanCount;i++)
   {
-    Serial.print(scanList[i]);
-    if(i<scanCount-1) Serial.print(",");
-  }
-  Serial.println();
-  return;
-}
-
-if(cmd.startsWith("ROUT:SCAN"))
-{
-  setScanList(cmd);
-  Serial.println("OK");
-  return;
-}
-
-
-
-if(cmd == "READ?")
-{
-  if(scanCount == 0)
-  {
-    Serial.println("ERR"); // nessuna scan list
+    measAll(Serial);
     return;
   }
 
-  readScan(Serial);
-  return;
-}
+  if(cmd == "ROUT:SCAN?")
+  {
+    for(int i = 0; i < scanCount; i++)
+    {
+      Serial.print(scanList[i]);
+      if(i < scanCount - 1)
+        Serial.print(",");
+    }
+
+    Serial.println();
+    return;
+  }
+
+  if(cmd.startsWith("ROUT:SCAN"))
+  {
+    setScanList(cmd);
+    Serial.println("OK");
+    return;
+  }
+
+  if(cmd == "READ?")
+  {
+    if(scanCount == 0)
+    {
+      Serial.println("ERR"); // nessuna scan list
+      return;
+    }
+
+    readScan(Serial);
+    return;
+  }
+
   /* DIG:OUT */
 
   if(cmd.startsWith("DIG:OUT "))
   {
     int comma = cmd.indexOf(',');
+    int ch = -1;
 
-    int ch = cmd.substring(8,comma).toInt();
-    int val = cmd.substring(comma+1).toInt();
-
-    if(ch>=0 && ch<=6)
+    if(comma == -1 || !resolveDigitalChannel(cmd.substring(8,comma), ch))
     {
-      digitalState[ch]=val;
-      digitalWrite(digitalPins[ch],val);
+      Serial.println("ERR");
+      return;
     }
 
-    Serial.println("OK");
+    int val = parseChannel(cmd.substring(comma+1));
+
+    if(val == 0 || val == 1)
+    {
+      int pwmChannel = findPwmChannelByPin(digitalPins[ch]);
+      if(pwmChannel >= 0)
+      {
+        pwmValue[pwmChannel] = val ? 255 : 0;
+
+        if(servoAttached[pwmChannel])
+        {
+          servos[pwmChannel].detach();
+          servoAttached[pwmChannel] = false;
+        }
+      }
+
+      digitalState[ch] = val;
+      digitalWrite(digitalPins[ch], val ? HIGH : LOW);
+      Serial.println("OK");
+      return;
+    }
+
+    Serial.println("ERR");
     return;
   }
 
@@ -261,7 +370,14 @@ if(cmd == "READ?")
 
   if(cmd.startsWith("DIG:OUT?"))
   {
-    int ch = cmd.substring(8).toInt();
+    int ch = -1;
+
+    if(!resolveDigitalChannel(cmd.substring(8), ch))
+    {
+      Serial.println("ERR");
+      return;
+    }
+
     Serial.println(digitalState[ch]);
     return;
   }
@@ -272,16 +388,30 @@ if(cmd == "READ?")
   {
     int comma = cmd.indexOf(',');
 
-    int ch = cmd.substring(9,comma).toInt();
-    int val = cmd.substring(comma+1).toInt();
-
-    if(ch>=0 && ch<=1)
+    if(comma == -1)
     {
-      pwmValue[ch]=val;
-      analogWrite(pwmPins[ch],val);
+      Serial.println("ERR");
+      return;
     }
 
-    Serial.println("OK");
+    int ch = parseChannel(cmd.substring(9,comma));
+    int val = parseChannel(cmd.substring(comma+1));
+
+    if(isValidPwmChannel(ch) && val >= 0 && val <= 255)
+    {
+      if(servoAttached[ch])
+      {
+        servos[ch].detach();
+        servoAttached[ch] = false;
+      }
+
+      pwmValue[ch] = val;
+      analogWrite(pwmPins[ch], val);
+      Serial.println("OK");
+      return;
+    }
+
+    Serial.println("ERR");
     return;
   }
 
@@ -289,7 +419,14 @@ if(cmd == "READ?")
 
   if(cmd.startsWith("SOUR:PWM?"))
   {
-    int ch = cmd.substring(9).toInt();
+    int ch = parseChannel(cmd.substring(9));
+
+    if(!isValidPwmChannel(ch))
+    {
+      Serial.println("ERR");
+      return;
+    }
+
     Serial.println(pwmValue[ch]);
     return;
   }
@@ -300,44 +437,70 @@ if(cmd == "READ?")
   {
     int comma = cmd.indexOf(',');
 
-    int ch = cmd.substring(11,comma).toInt();
-    int angle = cmd.substring(comma+1).toInt();
+    if(comma == -1)
+    {
+      Serial.println("ERR");
+      return;
+    }
 
-    if(ch>=0 && ch<=1)
+    int ch = parseChannel(cmd.substring(11,comma));
+    int angle = parseChannel(cmd.substring(comma+1));
+
+    if(isValidPwmChannel(ch) && angle >= 0 && angle <= 180)
+    {
+      if(!servoAttached[ch])
+      {
+        servos[ch].attach(pwmPins[ch]);
+        servoAttached[ch] = true;
+      }
+
       servos[ch].write(angle);
+      Serial.println("OK");
+      return;
+    }
+
+    Serial.println("ERR");
+    return;
+  }
+
+  if(cmd.startsWith("TRIG:SOUR "))
+  {
+    if(cmd.endsWith("IMM"))
+      trigMode = TRIG_IMM;
+    else if(cmd.endsWith("ANA"))
+      trigMode = TRIG_ANA;
+    else
+    {
+      Serial.println("ERR");
+      return;
+    }
 
     Serial.println("OK");
     return;
   }
 
-  if(cmd.startsWith("TRIG:SOUR "))
-{
-  if(cmd.endsWith("IMM")) trigMode = TRIG_IMM;
-  if(cmd.endsWith("ANA")) trigMode = TRIG_ANA;
+  if(cmd == "TRIG:SOUR?")
+  {
+    if(trigMode == TRIG_IMM)
+      Serial.println("IMM");
+    else
+      Serial.println("ANA");
 
-  Serial.println("OK");
-  return;
-}
+    return;
+  }
 
-if(cmd == "TRIG:SOUR?")
-{
-  if(trigMode==TRIG_IMM) Serial.println("IMM");
-  else Serial.println("ANA");
-  return;
-}
+  if(cmd.startsWith("TRIG:LEV "))
+  {
+    trigLevel = cmd.substring(9).toFloat();
+    Serial.println("OK");
+    return;
+  }
 
-if(cmd.startsWith("TRIG:LEV "))
-{
-  trigLevel = cmd.substring(9).toFloat();
-  Serial.println("OK");
-  return;
-}
-
-if(cmd == "TRIG:LEV?")
-{
-  Serial.println(trigLevel,3);
-  return;
-}
+  if(cmd == "TRIG:LEV?")
+  {
+    Serial.println(trigLevel,3);
+    return;
+  }
 
   Serial.println("ERR");
 }
@@ -348,14 +511,11 @@ void setup()
 {
   Serial.begin(BAUDRATE);
 
-  for(int i=0;i<7;i++)
+  for(uint8_t i = 0; i < digitalPinCount; i++)
     pinMode(digitalPins[i],OUTPUT);
 
-  for(int i=0;i<2;i++)
-  {
+  for(uint8_t i = 0; i < pwmPinCount; i++)
     pinMode(pwmPins[i],OUTPUT);
-    servos[i].attach(pwmPins[i]);
-  }
 
   resetDevice();
 }
