@@ -15,7 +15,7 @@ const uint8_t digitalPinCount = sizeof(digitalPins) / sizeof(digitalPins[0]);
 bool digitalState[digitalPinCount];
 uint8_t pwmValue[2];
 bool servoAttached[2];
-
+bool ackEnabled = true; // Di default risponde OK per retrocompatibilità
 const uint8_t pwmPinCount = sizeof(pwmPins) / sizeof(pwmPins[0]);
 
 Servo servos[2];
@@ -31,6 +31,11 @@ unsigned long trigTimeout = 1000;
 int trigAnalogChannel = 0;   // Default A0
 int trigDigitalChannel = 0;  // Default primo pin digitale (pin 2)
 /* ---------- Utility ---------- */
+void sendAck()
+{
+  if(ackEnabled) 
+    sendAck();
+}
 
 bool isValidAnalogChannel(int ch)
 {
@@ -266,7 +271,7 @@ void processCommand(String cmd)
   if(cmd == "*RST")
   {
     resetDevice();
-    Serial.println("OK");
+    sendAck();
     return;
   }
 
@@ -275,7 +280,27 @@ void processCommand(String cmd)
     Serial.println(currentAnalogChannel);
     return;
   }
+/* SYST:ACK */
+  if(cmd.startsWith("SYST:ACK "))
+  {
+    if(cmd.endsWith("ON") || cmd.endsWith("1"))
+      ackEnabled = true;
+    else if(cmd.endsWith("OFF") || cmd.endsWith("0"))
+      ackEnabled = false;
+    else
+    {
+      Serial.println("ERR");
+      return;
+    }
+    sendAck();
+    return;
+  }
 
+  if(cmd == "SYST:ACK?")
+  {
+    Serial.println(ackEnabled ? "1" : "0");
+    return;
+  }
   /* CONF:VOLT */
 
   if(cmd.startsWith("CONF:VOLT"))
@@ -285,7 +310,7 @@ void processCommand(String cmd)
     if(isValidAnalogChannel(ch))
     {
       currentAnalogChannel = ch;
-      Serial.println("OK");
+      sendAck();
       return;
     }
 
@@ -351,7 +376,7 @@ void processCommand(String cmd)
   if(cmd.startsWith("ROUT:SCAN"))
   {
     setScanList(cmd);
-    Serial.println("OK");
+    sendAck();
     return;
   }
 
@@ -398,7 +423,7 @@ void processCommand(String cmd)
 
       digitalState[ch] = val;
       digitalWrite(digitalPins[ch], val ? HIGH : LOW);
-      Serial.println("OK");
+      sendAck();
       return;
     }
 
@@ -447,7 +472,7 @@ void processCommand(String cmd)
 
       pwmValue[ch] = val;
       analogWrite(pwmPins[ch], val);
-      Serial.println("OK");
+      sendAck();
       return;
     }
 
@@ -495,7 +520,7 @@ void processCommand(String cmd)
       }
 
       servos[ch].write(angle);
-      Serial.println("OK");
+      sendAck();
       return;
     }
 
@@ -517,7 +542,7 @@ if(cmd.startsWith("TRIG:SOUR "))
       return;
     }
 
-    Serial.println("OK");
+    sendAck();
     return;
   }
 
@@ -541,7 +566,7 @@ if(cmd.startsWith("TRIG:SOUR "))
       if(isValidAnalogChannel(ch))
       {
         trigAnalogChannel = ch;
-        Serial.println("OK");
+        sendAck();
         return;
       }
     }
@@ -554,7 +579,7 @@ if(cmd.startsWith("TRIG:SOUR "))
         trigDigitalChannel = ch;
         // FONDAMENTALE: Trasforma il pin in INGRESSO per poter leggere il segnale esterno
         pinMode(digitalPins[ch], INPUT); 
-        Serial.println("OK");
+        sendAck();
         return;
       }
     }
@@ -581,7 +606,7 @@ if(cmd.startsWith("TRIG:SOUR "))
   if(cmd.startsWith("TRIG:LEV "))
   {
     trigLevel = cmd.substring(9).toFloat();
-    Serial.println("OK");
+    sendAck();
     return;
   }
 
@@ -599,7 +624,7 @@ if(cmd.startsWith("TRIG:SOUR "))
     if (parsedTout > 0) // Il timeout deve essere maggiore di zero
     {
       trigTimeout = (unsigned long)parsedTout;
-      Serial.println("OK");
+      sendAck();
     }
     else
     {
