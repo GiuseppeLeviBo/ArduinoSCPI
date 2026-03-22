@@ -1,409 +1,559 @@
 # ArduinoSCPI
-A simple SCPI Library for Arduino
 
-
----
-
-# 📘 **OpenSCPI-Lab UNO – User Manual v1.2**
+Libreria/firmware SCPI per Arduino UNO che espone un piccolo strumento programmabile via seriale USB. Il firmware implementa misure analogiche, uscite digitali, PWM, servo, acquisizione multi-canale e trigger analogico/digitale con sintassi ispirata a SCPI. 
 
 ---
 
-## 1. Introduzione
+# 📘 OpenSCPI-Lab UNO – Manuale utente
 
-**OpenSCPI-Lab UNO** è uno strumento didattico basato su Arduino UNO che implementa un sottoinsieme del protocollo SCPI (Standard Commands for Programmable Instruments), lo stesso utilizzato da strumenti professionali come quelli di Keysight Technologies e Tektronix.
+## 1. Panoramica
 
-Permette di:
+**OpenSCPI-Lab UNO** trasforma un Arduino UNO in uno strumento controllabile via SCPI (**S**tandard **C**ommands for **P**rogrammable **I**nstruments).
 
-* effettuare misure analogiche
-* controllare uscite digitali
-* generare segnali PWM
-* controllare servo motori
-* eseguire acquisizioni multi-canale
-* introdurre il concetto di **trigger**
+Funzioni principali attualmente implementate:
 
----
-
-## 2. Connessione
-
-Lo strumento comunica via:
-
-* USB (Seriale CDC)
-* Baudrate: **115200**
-
-Terminazione comandi:
-
-```
-\n
-```
+- identificazione e reset strumento
+- selezione e lettura ingressi analogici `A0..A5`
+- lettura ADC grezza oppure tensione convertita in volt
+- scansione di più canali analogici con `ROUT:SCAN` + `READ?`
+- controllo uscite digitali sui pin `D2..D13`
+- controllo PWM sui pin `D9` e `D10`
+- controllo servo sui pin `D9` e `D10`
+- trigger immediato, analogico o digitale
+- abilitazione/disabilitazione delle risposte di conferma `OK`
 
 ---
 
-## 3. Modello concettuale
+## 2. Comunicazione seriale
 
-Lo strumento segue questo flusso:
+Lo strumento comunica tramite porta seriale USB.
 
-```
-Configurazione → Trigger → Acquisizione → Lettura
+- **Baudrate:** `115200`
+- **Terminazione comando:** newline `\n`
+- **Formato generale risposte:**
+  - valori numerici o stringhe per le query `...?`
+  - `OK` per i comandi di configurazione, se gli ACK sono abilitati
+  - `ERR`, `ERR:MODE` o `ERR:TIMEOUT` in caso di errore
+
+### Esempio
+
+```text
+*IDN?\n
 ```
 
 ---
 
-## 4. Identificazione
+## 3. Modello operativo
+
+Per le acquisizioni multi-canale il flusso concettuale è:
+
+```text
+Configurazione -> Trigger -> Acquisizione -> Lettura
+```
+
+In pratica:
+
+1. si definisce la lista di canali con `ROUT:SCAN`
+2. si configura l'eventuale trigger con `TRIG:*`
+3. si avvia la lettura con `READ?`
+
+---
+
+## 4. Mappa hardware
+
+### Ingressi analogici
+
+| Canale SCPI | Pin Arduino |
+| --- | --- |
+| 0 | A0 |
+| 1 | A1 |
+| 2 | A2 |
+| 3 | A3 |
+| 4 | A4 |
+| 5 | A5 |
+
+### Uscite digitali
+
+| Canale SCPI | Pin Arduino |
+| --- | --- |
+| 0 | D2 |
+| 1 | D3 |
+| 2 | D4 |
+| 3 | D5 |
+| 4 | D6 |
+| 5 | D7 |
+| 6 | D8 |
+| 7 | D9 |
+| 8 | D10 |
+| 9 | D11 |
+| 10 | D12 |
+| 11 | D13 / LED_BUILTIN |
+
+> Nota: i pin `D9` e `D10` possono essere usati sia come uscite digitali sia come uscite PWM/servo.
+
+### PWM / Servo
+
+| Canale SCPI | Pin Arduino |
+| --- | --- |
+| 0 | D9 |
+| 1 | D10 |
+
+---
+
+## 5. Comandi standard
 
 ### `*IDN?`
 
-Restituisce l’identità dello strumento:
+Restituisce l'identità dello strumento.
 
-```
+**Risposta:**
+
+```text
 OpenSCPI-Lab,Arduino-UNO,1.2
 ```
 
----
-
 ### `*RST`
 
-Reset completo dello strumento:
+Ripristina lo stato iniziale dello strumento:
 
-* reset canali
-* reset uscite
-* reset configurazioni
+- canale analogico corrente = `0`
+- trigger = `IMM`
+- livello trigger = `2.5`
+- timeout trigger = `1000 ms`
+- uscite digitali = `LOW`
+- PWM = `0`
+- servo sganciati (`detach`)
+
+**Risposta:** `OK` se gli ACK sono attivi.
 
 ---
 
-## 5. Misure analogiche
+## 6. Gestione ACK
 
-### Canali disponibili
+Il firmware può rispondere con `OK` dopo i comandi di configurazione. Per retrocompatibilità gli ACK sono attivi di default.
+
+### `SYST:ACK ON`
+### `SYST:ACK 1`
+
+Abilita le risposte `OK`.
+
+### `SYST:ACK OFF`
+### `SYST:ACK 0`
+
+Disabilita le risposte `OK`.
+
+### `SYST:ACK?`
+
+Restituisce:
+
+- `1` = ACK attivi
+- `0` = ACK disattivi
+
+---
+
+## 7. Misure analogiche
+
+### Mappa canali analogici
 
 | Canale | Pin |
-| ------ | --- |
-| 0      | A0  |
-| 1      | A1  |
-| 2      | A2  |
-| 3      | A3  |
-| 4      | A4  |
-| 5      | A5  |
-
----
+| --- | --- |
+| 0 | A0 |
+| 1 | A1 |
+| 2 | A2 |
+| 3 | A3 |
+| 4 | A4 |
+| 5 | A5 |
 
 ### `CONF:VOLT <ch>`
 
-Seleziona il canale corrente.
+Seleziona il canale analogico corrente (`0..5`).
 
-Esempio:
+**Esempio:**
 
-```
+```text
 CONF:VOLT 2
 ```
 
----
-
 ### `CONF:VOLT?`
 
-Restituisce il canale attivo.
-
----
+Restituisce il canale analogico attualmente selezionato.
 
 ### `MEAS:VOLT?`
 
-Misura sul canale configurato.
-
----
+Legge la tensione sul canale correntemente configurato.
 
 ### `MEAS:VOLT? <ch>`
 
-Misura diretta su un canale.
-
----
+Legge direttamente il canale specificato (`0..5`) senza cambiare la configurazione corrente.
 
 ### `MEAS:RAW? <ch>`
 
-Restituisce valore ADC (0–1023).
+Restituisce il valore ADC grezzo del canale specificato (`0..5`), nel range:
 
----
+```text
+0..1023
+```
 
 ### `MEAS:VOLT:ALL?`
 
-Misura tutti i canali:
+Restituisce in una singola riga le tensioni dei sei canali analogici.
 
+**Esempio:**
+
+```text
+1.0215,0.9785,0.1173,4.5015,0.0000,0.3324
 ```
-1.02,0.98,0.12,4.50,0.00,0.33
-```
+
+> La conversione in tensione usa il riferimento a 5 V con formula `raw * (5.0 / 1023.0)`.
 
 ---
 
-## 6. Uscite digitali
+## 8. Uscite digitali
 
-### Canali
+### Mappa canali digitali
 
-| SCPI | Pin   |
-| ---- | ----- |
-| 0–11 | D2–D12, D13 |
-
----
+| Canale | Pin |
+| --- | --- |
+| 0 | D2 |
+| 1 | D3 |
+| 2 | D4 |
+| 3 | D5 |
+| 4 | D6 |
+| 5 | D7 |
+| 6 | D8 |
+| 7 | D9 |
+| 8 | D10 |
+| 9 | D11 |
+| 10 | D12 |
+| 11 | D13 |
 
 ### `DIG:OUT <ch>,<val>`
 
-Imposta uscita:
+Imposta un'uscita digitale.
 
-``` 
+- `<val>` può essere `0` oppure `1`
+- `<ch>` può essere indicato in due modi:
+  - **indice SCPI**: `0..11`
+  - **pin fisico Arduino**: `D2`, `D3`, ..., `D13`
+
+**Esempi:**
+
+```text
 DIG:OUT 3,1
 DIG:OUT 3,0
 DIG:OUT D13,1
 DIG:OUT D13,0
 ```
 
-`<ch>` è l’indice SCPI. Se vuoi indicare il pin fisico Arduino devi usare la forma esplicita `D<n>`: ad esempio `D9`, `D11`, `D13`. In questo modo `DIG:OUT 9,1` significa sempre **canale SCPI 9**, mentre `DIG:OUT D9,1` significa sempre **pin fisico D9**. Il LED integrato sul pin 13 è quindi controllabile con `DIG:OUT D13,1`.
+### Regola importante per il canale
 
-Le uscite PWM (`D9` e `D10`) fanno parte anche delle uscite digitali generiche: possono quindi essere usate con `DIG:OUT` come normali pin HIGH/LOW oppure con `SOUR:PWM` per pilotarle in modulazione PWM. Anche `D11` e `D12` sono ora inclusi tra le uscite digitali gestite da `DIG:OUT`.
+- `DIG:OUT 9,1` significa **canale SCPI 9** -> pin `D11`
+- `DIG:OUT D9,1` significa **pin fisico `D9`**
 
----
+Questa distinzione evita ambiguità fra indice logico e numero del pin Arduino.
+
+### Interazione con PWM/Servo
+
+Se si usa `DIG:OUT` su un pin PWM (`D9` o `D10`):
+
+- il corrispondente valore PWM viene aggiornato internamente a `255` oppure `0`
+- un eventuale servo collegato su quel canale viene disattivato (`detach`)
 
 ### `DIG:OUT? <ch>`
 
-Legge stato uscita.
+Legge lo stato logico dell'uscita specificata.
+
+Sono accettati sia gli indici SCPI sia i nomi pin `D<n>`.
 
 ---
 
-## 7. PWM
+## 9. PWM
 
-### Canali
+### Mappa canali PWM
 
-| SCPI | Pin |
-| ---- | --- |
-| 0    | D9  |
-| 1    | D10 |
-
----
+| Canale | Pin |
+| --- | --- |
+| 0 | D9 |
+| 1 | D10 |
 
 ### `SOUR:PWM <ch>,<val>`
 
-Valore:
+Imposta il duty cycle PWM.
 
-```
-0–255
-```
+- `<ch>`: `0..1`
+- `<val>`: `0..255`
 
----
+**Esempio:**
+
+```text
+SOUR:PWM 0,128
+```
 
 ### `SOUR:PWM? <ch>`
 
-Restituisce duty cycle.
+Restituisce il valore PWM corrente del canale richiesto.
+
+### Nota operativa
+
+Se sullo stesso canale era stato precedentemente attivato un servo, il firmware esegue automaticamente il `detach()` prima di applicare il PWM.
 
 ---
 
-## 8. Servo
+## 10. Servo
+
+### Mappa canali servo
+
+| Canale | Pin |
+| --- | --- |
+| 0 | D9 |
+| 1 | D10 |
 
 ### `SOUR:SERVO <ch>,<angle>`
 
-Angolo:
+Imposta la posizione del servo.
 
+- `<ch>`: `0..1`
+- `<angle>`: `0..180`
+
+**Esempio:**
+
+```text
+SOUR:SERVO 1,90
 ```
-0–180°
-```
+
+Quando il canale non è ancora associato a un servo, il firmware esegue automaticamente `attach()` sul pin corrispondente.
+
+> Non è presente una query `SOUR:SERVO?` nel firmware attuale.
 
 ---
 
-## 9. Acquisizione multi-canale
-
----
+## 11. Scansione multi-canale
 
 ### `ROUT:SCAN (@list)`
 
-Definisce i canali da acquisire.
+Definisce la lista di canali analogici da acquisire con `READ?`.
 
-Esempi:
+Formati supportati:
 
-```
+- elenco esplicito: `(@0,1,2)`
+- intervallo: `(@0:5)`
+
+**Esempi:**
+
+```text
 ROUT:SCAN (@0,1,2)
 ROUT:SCAN (@0:5)
 ```
 
----
-
 ### `ROUT:SCAN?`
 
-Restituisce lista attiva.
+Restituisce la lista canali attualmente configurata come sequenza separata da virgole.
 
----
+**Esempio:**
+
+```text
+0,1,2
+```
 
 ### `READ?`
 
-Esegue acquisizione sui canali configurati.
+Esegue l'acquisizione dei canali definiti in `ROUT:SCAN`.
 
-Esempio:
+- se il trigger è soddisfatto, restituisce le tensioni dei canali selezionati
+- se la lista è vuota, restituisce `ERR`
+- se il trigger va in timeout, restituisce `ERR:TIMEOUT`
 
-```
-1.23,0.98,3.45
-```
+**Esempio risposta:**
 
----
-
-## 10. Trigger (concetto chiave)
-
-Il trigger definisce **quando iniziare la misura**.
-
----
-
-### Modalità disponibili
-
-| Comando | Significato      |
-| ------- | ---------------- |
-| `IMM`   | immediato        |
-| `ANA`   | soglia analogica |
-
----
-
-### `TRIG:SOUR IMM`
-
-Misura immediata.
-
----
-
-### `TRIG:SOUR ANA`
-
-Attende evento analogico.
-
----
-
-### `TRIG:LEV <val>`
-
-Imposta soglia (Volt).
-
-Esempio:
-
-```
-TRIG:LEV 2.5
+```text
+1.2307,0.9814,3.4487
 ```
 
 ---
+
+## 12. Trigger
+
+Il firmware supporta tre modalità trigger:
+
+- `IMM` = trigger immediato
+- `ANA` = trigger analogico
+- `DIG` = trigger digitale
+
+### `TRIG:SOUR <mode>`
+
+Seleziona la sorgente di trigger.
+
+**Valori ammessi:**
+
+```text
+IMM
+ANA
+DIG
+```
+
+**Esempi:**
+
+```text
+TRIG:SOUR IMM
+TRIG:SOUR ANA
+TRIG:SOUR DIG
+```
 
 ### `TRIG:SOUR?`
 
-Restituisce modalità trigger.
+Restituisce la modalità trigger corrente.
 
----
+### `TRIG:CHAN <ch>`
+
+Imposta il canale sorgente del trigger.
+
+Il significato dipende dalla modalità corrente:
+
+- con `TRIG:SOUR ANA`, `<ch>` deve essere un canale analogico `0..5`
+- con `TRIG:SOUR DIG`, `<ch>` può essere:
+  - un indice digitale SCPI `0..11`
+  - un pin nel formato `D<n>`
+
+#### Mappa rapida per `TRIG:CHAN`
+
+**Trigger analogico**
+
+| Canale | Pin |
+| --- | --- |
+| 0 | A0 |
+| 1 | A1 |
+| 2 | A2 |
+| 3 | A3 |
+| 4 | A4 |
+| 5 | A5 |
+
+**Trigger digitale**
+
+| Canale | Pin |
+| --- | --- |
+| 0 | D2 |
+| 1 | D3 |
+| 2 | D4 |
+| 3 | D5 |
+| 4 | D6 |
+| 5 | D7 |
+| 6 | D8 |
+| 7 | D9 |
+| 8 | D10 |
+| 9 | D11 |
+| 10 | D12 |
+| 11 | D13 |
+
+Quando si configura un trigger digitale, il pin selezionato viene messo in `INPUT` per permettere la lettura del segnale esterno.
+
+Se si tenta di usare `TRIG:CHAN` mentre la modalità è `IMM`, il firmware risponde:
+
+```text
+ERR:MODE
+```
+
+### `TRIG:CHAN?`
+
+Restituisce:
+
+- il canale analogico di trigger se il modo è `ANA`
+- il canale digitale di trigger se il modo è `DIG`
+- `NONE` se il modo è `IMM`
+
+### `TRIG:LEV <value>`
+
+Imposta il livello di trigger.
+
+- in modalità `ANA`, la condizione di trigger è `V >= level`
+- in modalità `DIG`, il livello viene interpretato così:
+  - `level >= 0.5` -> attesa livello logico `HIGH`
+  - `level < 0.5` -> attesa livello logico `LOW`
 
 ### `TRIG:LEV?`
 
-Restituisce soglia.
+Restituisce il livello trigger corrente.
+
+### `TRIG:TOUT <ms>`
+
+Imposta il timeout del trigger in millisecondi.
+
+- deve essere maggiore di `0`
+- il default dopo reset è `1000`
+
+### `TRIG:TOUT?`
+
+Restituisce il timeout trigger corrente in millisecondi.
 
 ---
 
-## 11. Come funziona il trigger analogico
+## 13. Esempi rapidi
 
-Quando attivo:
+### Misura singolo canale
 
-```
-TRIG:SOUR ANA
-```
-
-lo strumento:
-
-1. legge continuamente il canale A0
-2. confronta con la soglia
-3. quando:
-
-```
-V >= soglia
+```text
+CONF:VOLT 0
+MEAS:VOLT?
 ```
 
-→ esegue la misura
+### Misura diretta senza riconfigurare
 
----
-
-## 12. Esempi
-
----
-
-### Misura singola
-
-```
-MEAS:VOLT? 1
+```text
+MEAS:VOLT? 4
+MEAS:RAW? 4
 ```
 
----
+### Accensione LED integrato
 
-### Tutti i canali
-
-```
-MEAS:VOLT:ALL?
+```text
+DIG:OUT D13,1
 ```
 
----
+### PWM su D9
 
-### Scan list
-
+```text
+SOUR:PWM 0,200
 ```
+
+### Servo a 45° su D10
+
+```text
+SOUR:SERVO 1,45
+```
+
+### Acquisizione con trigger analogico
+
+```text
 ROUT:SCAN (@0,1,2)
-READ?
-```
-
----
-
-### Trigger analogico
-
-```
 TRIG:SOUR ANA
-TRIG:LEV 2.0
+TRIG:CHAN 0
+TRIG:LEV 2.500
+TRIG:TOUT 3000
+READ?
+```
+
+### Acquisizione con trigger digitale su D2 alto
+
+```text
+ROUT:SCAN (@0:2)
+TRIG:SOUR DIG
+TRIG:CHAN D2
+TRIG:LEV 1
+TRIG:TOUT 5000
 READ?
 ```
 
 ---
 
-## 13. Esempio Python
+## 14. Limiti attuali
 
-```python
-import serial
-import time
-
-ser = serial.Serial("/dev/ttyACM0",115200,timeout=1)
-time.sleep(2)
-
-def query(cmd):
-    ser.write((cmd+"\n").encode())
-    return ser.readline().decode().strip()
-
-print(query("*IDN?"))
-
-print(query("MEAS:VOLT? 0"))
-
-query("ROUT:SCAN (@0,1,2)")
-print(query("READ?"))
-
-query("TRIG:SOUR ANA")
-query("TRIG:LEV 2.5")
-
-print(query("READ?"))
-```
+- firmware pensato per **Arduino UNO / ATmega328P**
+- tensioni calcolate assumendo riferimento ADC a **5 V**
+- il trigger si applica alla lettura `READ?`, non ai comandi `MEAS:*`
+- il firmware non implementa un parser SCPI completo, ma un sottoinsieme pratico
+- non sono presenti buffer di acquisizione, timestamp o configurazioni avanzate di sampling
 
 ---
 
-## 14. Limitazioni hardware
+## 15. Licenza
 
-Arduino UNO:
-
-* ADC singolo (non simultaneo)
-* conversione sequenziale (~100 µs per canale)
-* risoluzione 10 bit
-
----
-
-## 15. Obiettivi didattici
-
-Questo progetto introduce:
-
-* SCPI
-* automazione di misura
-* acquisizione dati
-* sistemi reattivi (trigger)
-* interazione Python-hardware
-
----
-
-## 16. Licenza e contributi
-
-Progetto open source pensato per:
-
-* scuole
-* università
-* autoapprendimento
+Distribuito secondo la licenza riportata nel file `LICENSE`.
