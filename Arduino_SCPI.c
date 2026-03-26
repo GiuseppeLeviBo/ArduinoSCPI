@@ -34,7 +34,7 @@ int trigDigitalChannel = 0;  // Default primo pin digitale (pin 2)
 void sendAck()
 {
   if(ackEnabled) 
-    sendAck();
+    Serial.println("OK");
 }
 
 bool isValidAnalogChannel(int ch)
