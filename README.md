@@ -21,6 +21,17 @@ Funzioni principali attualmente implementate:
 - controllo servo sui pin `D9` e `D10`
 - trigger immediato, analogico o digitale
 - abilitazione/disabilitazione delle risposte di conferma `OK`
+- **(nuovo, firmware scope)** acquisizione bufferizzata tipo oscilloscopio con pre-trigger e post-trigger (`INIT` + `FETC?`)
+- **(nuovo, firmware scope)** scelta del fronte trigger (`TRIG:SLOP POS|NEG`)
+
+### Varianti firmware nel repository
+
+Il repository include ora **due sketch**:
+
+- `Arduino_SCPI.c`: versione base/leggera (comandi SCPI essenziali)
+- `Arduino_SCOPE_SCPI.c`: versione estesa con funzionalità scope (acquisizione bufferizzata)
+
+> Questa documentazione mantiene i comandi comuni e aggiunge, in sezioni dedicate, le estensioni specifiche della versione `Arduino_SCOPE_SCPI.c`.
 
 ---
 
@@ -56,6 +67,12 @@ In pratica:
 1. si definisce la lista di canali con `ROUT:SCAN`
 2. si configura l'eventuale trigger con `TRIG:*`
 3. si avvia la lettura con `READ?`
+
+Per la variante scope (`Arduino_SCOPE_SCPI.c`) è disponibile anche il flusso avanzato:
+
+```text
+Configurazione -> Arm (INIT) -> Trigger + campionamento -> Fetch (FETC?)
+```
 
 ---
 
@@ -123,6 +140,7 @@ Ripristina lo stato iniziale dello strumento:
 - uscite digitali = `LOW`
 - PWM = `0`
 - servo sganciati (`detach`)
+- *(firmware scope)* fronte trigger = `POS`
 
 **Risposta:** `OK` se gli ACK sono attivi.
 
@@ -204,7 +222,8 @@ Restituisce in una singola riga le tensioni dei sei canali analogici.
 1.0215,0.9785,0.1173,4.5015,0.0000,0.3324
 ```
 
-> La conversione in tensione usa il riferimento a 5 V con formula `raw * (5.0 / 1023.0)`.
+> La conversione in tensione usa il riferimento a 5 V.
+> Nota implementativa: `Arduino_SCPI.c` usa `raw * (5.0 / 1023.0)`, mentre `Arduino_SCOPE_SCPI.c` usa `raw * (5.0 / 1024.0)`.
 
 ---
 
@@ -360,7 +379,7 @@ Restituisce la lista canali attualmente configurata come sequenza separata da vi
 Esegue l'acquisizione dei canali definiti in `ROUT:SCAN`.
 
 - se il trigger è soddisfatto, restituisce le tensioni dei canali selezionati
-- se la lista è vuota, restituisce `ERR`
+- se la lista è vuota, restituisce `ERR:NOSCAN`
 - se il trigger va in timeout, restituisce `ERR:TIMEOUT`
 
 **Esempio risposta:**
@@ -402,6 +421,24 @@ TRIG:SOUR DIG
 ### `TRIG:SOUR?`
 
 Restituisce la modalità trigger corrente.
+
+### `TRIG:SLOP <POS|NEG>` *(solo firmware scope)*
+
+Imposta il fronte di trigger nella modalità scope:
+
+- `POS` = fronte di salita
+- `NEG` = fronte di discesa
+
+In `ANA` la condizione diventa:
+
+- `POS`: trigger quando `V >= level`
+- `NEG`: trigger quando `V <= level`
+
+Per trigger digitali, il firmware scope mantiene il confronto sul livello logico atteso.
+
+### `TRIG:SLOP?` *(solo firmware scope)*
+
+Restituisce `POS` oppure `NEG`.
 
 ### `TRIG:CHAN <ch>`
 
@@ -464,7 +501,7 @@ Restituisce:
 
 Imposta il livello di trigger.
 
-- in modalità `ANA`, la condizione di trigger è `V >= level`
+- in modalità `ANA`, la condizione di trigger è `V >= level` (oppure `V <= level` se `TRIG:SLOP NEG` nella versione scope)
 - in modalità `DIG`, il livello viene interpretato così:
   - `level >= 0.5` -> attesa livello logico `HIGH`
   - `level < 0.5` -> attesa livello logico `LOW`
@@ -486,7 +523,68 @@ Restituisce il timeout trigger corrente in millisecondi.
 
 ---
 
-## 13. Esempi rapidi
+## 13. Acquisizione scope bufferizzata *(solo `Arduino_SCOPE_SCPI.c`)*
+
+La variante scope introduce una macchina a stati di acquisizione con buffer circolare logico su array lineare:
+
+- stati: `ACQ_IDLE`, `ACQ_PREFILL`, `ACQ_ARMED`, `ACQ_POST`, `ACQ_DONE`
+- buffer ADC raw massimo: `MAX_TOTAL_POINTS = 300` campioni totali (distribuiti su tutti i canali in scan)
+- pre-trigger e post-trigger al 50% dei punti richiesti
+
+### `ACQ:POIN <n>`
+
+Imposta il numero di punti per acquisizione.
+
+- ammessi: `1 .. 300`
+- errore su valore non valido: `ERR:VAL`
+
+### `ACQ:TINT <us>`
+
+Imposta il passo temporale di campionamento interno in **microsecondi** (variabile firmware `acqTStep`).
+
+- valore ammesso: `> 0`
+- errore su valore non valido: `ERR:VAL`
+
+> Nota: nel codice la variabile locale si chiama `ms`, ma viene confrontata/assegnata direttamente a `micros()` come unità di microsecondi.
+
+### `INIT`
+
+Arma l'acquisizione scope.
+
+Controlli effettuati:
+
+- se `ROUT:SCAN` non è configurato -> `ERR:NOSCAN`
+- se `ACQ:POIN * numero_canali_scan > 300` -> `ERR:MEM`
+
+Se valido, entra in stato `ACQ_PREFILL`.
+
+### `ABOR`
+
+Interrompe/disarma l'acquisizione e riporta lo stato a `ACQ_IDLE`.
+
+### `FETC?`
+
+Attende il completamento dell'acquisizione e poi restituisce i dati acquisiti.
+
+Comportamento:
+
+- se non armato (`ACQ_IDLE`) -> `ERR:NOTARMED`
+- timeout interno fetch di 2 secondi -> `ERR:TIMEOUT`
+- in caso positivo, stampa `acqPoints` righe
+- ogni riga contiene i canali della scan corrente separati da virgola
+- valori convertiti in volt con `raw * (5.0 / 1024.0)`
+
+Formato output (esempio con 2 canali in scan):
+
+```text
+1.2344,0.1025
+1.2451,0.1030
+...
+```
+
+---
+
+## 14. Esempi rapidi
 
 ### Misura singolo canale
 
@@ -542,18 +640,32 @@ TRIG:TOUT 5000
 READ?
 ```
 
+### Sequenza scope completa (firmware `Arduino_SCOPE_SCPI.c`)
+
+```text
+ROUT:SCAN (@0,1)
+TRIG:SOUR ANA
+TRIG:SLOP POS
+TRIG:CHAN 0
+TRIG:LEV 2.300
+ACQ:POIN 120
+ACQ:TINT 250
+INIT
+FETC?
+```
+
 ---
 
-## 14. Limiti attuali
+## 15. Limiti attuali
 
 - firmware pensato per **Arduino UNO / ATmega328P**
 - tensioni calcolate assumendo riferimento ADC a **5 V**
-- il trigger si applica alla lettura `READ?`, non ai comandi `MEAS:*`
+- il trigger si applica alla lettura `READ?` e, nella versione scope, anche al ciclo `INIT`/`FETC?`
 - il firmware non implementa un parser SCPI completo, ma un sottoinsieme pratico
-- non sono presenti buffer di acquisizione, timestamp o configurazioni avanzate di sampling
+- nella variante `Arduino_SCOPE_SCPI.c` la memoria totale dei campioni è limitata a `300` valori ADC complessivi
 
 ---
 
-## 15. Licenza
+## 16. Licenza
 
 Distribuito secondo la licenza riportata nel file `LICENSE`.
