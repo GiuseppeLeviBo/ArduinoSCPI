@@ -565,7 +565,11 @@ void processCommand(String &cmd)
     trigLevel = lev;
     sendAck(); return; 
   }
-  if(cmd == F("TRIG:LEV?")) { Serial.println(trigLevel,3); return; }
+  if(cmd == F("TRIG:LEV?")) { 
+    if(trigMode == TRIG_DIG) { setError(ERR_MODE); return; } // Rifiuta la lettura in digitale
+    Serial.println(trigLevel,3); 
+    return; 
+  }
 
   if(cmd.startsWith(F("TRIG:TOUT "))) {
     long parsedTout = cmd.substring(10).toInt();
