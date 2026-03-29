@@ -37,6 +37,24 @@ Il repository include ora **due sketch**:
 
 > Questa documentazione mantiene i comandi comuni e aggiunge, in sezioni dedicate, le estensioni specifiche della versione `Arduino_SCOPE_SCPI.c`.
 
+### ⚠️ Compatibilità rapida tra firmware (importante)
+
+Per evitare ambiguità:
+
+- `Arduino_SCPI.c` è **davvero una versione base**.
+- molte estensioni documentate sotto sono **solo** per `Arduino_SCOPE_SCPI.c`.
+
+| Comando/famiglia | `Arduino_SCPI.c` (base) | `Arduino_SCOPE_SCPI.c` (esteso) |
+| --- | --- | --- |
+| `*IDN?`, `*RST`, `SYST:ACK` | ✅ | ✅ |
+| `*OPC?`, `*CLS`, `SYST:ERR?` | ❌ | ✅ |
+| `CAL:REF`, `CAL:VREF` | ❌ | ✅ |
+| `DIG:MODE`, `DIG:IN?` | ❌ | ✅ |
+| `TRIG:SLOP` | ❌ | ✅ |
+| `ACQ:*`, `INIT`, `ABOR`, `FETC?` | ❌ | ✅ |
+
+> Se usi il firmware base `Arduino_SCPI.c`, i comandi non supportati rispondono con errore.
+
 ---
 
 ## 2. Comunicazione seriale
@@ -125,6 +143,8 @@ Configurazione -> Arm (INIT) -> Trigger + campionamento -> Fetch (FETC?)
 
 ## 5. Comandi standard
 
+> Nota compatibilità: in questa sezione `*OPC?`, `*CLS` e `SYST:ERR?` sono disponibili **solo** nel firmware `Arduino_SCOPE_SCPI.c`.
+
 ### `*IDN?`
 
 Restituisce l'identità dello strumento.
@@ -202,7 +222,10 @@ Restituisce:
 
 ## ⚠️ Warning importante su riferimento ADC e precisione
 
-La conversione in volt usa **sempre**:
+> `CAL:REF` e `CAL:VREF` sono comandi **solo** di `Arduino_SCOPE_SCPI.c`.  
+> La versione base `Arduino_SCPI.c` usa conversione fissa a 5V (`raw * (5.0 / 1023.0)`).
+
+Nel firmware `Arduino_SCOPE_SCPI.c` la conversione in volt usa:
 
 ```text
 V = raw * (vRef / 1024.0)
@@ -300,6 +323,9 @@ Restituisce in una singola riga le tensioni dei sei canali analogici.
 
 ## 8. GPIO digitali (IN/OUT/PULLUP, input e output)
 
+> `DIG:MODE`, `DIG:MODE?` e `DIG:IN?` sono disponibili **solo** nel firmware `Arduino_SCOPE_SCPI.c`.  
+> Nel firmware base restano `DIG:OUT` e `DIG:OUT?`.
+
 ### Mappa canali digitali
 
 | Canale | Pin |
@@ -321,7 +347,7 @@ Restituisce in una singola riga le tensioni dei sei canali analogici.
 
 Imposta un'uscita digitale.
 
-**Prerequisito:** il canale deve essere in modalità `OUT` (vedi `DIG:MODE`), altrimenti il firmware restituisce errore di modalità (`SYST:ERR?` -> `-221`).
+**Prerequisito (solo firmware scope):** il canale deve essere in modalità `OUT` (vedi `DIG:MODE`), altrimenti il firmware restituisce errore di modalità (`SYST:ERR?` -> `-221`).
 
 - `<val>` può essere `0` oppure `1`
 - `<ch>` può essere indicato in due modi:
