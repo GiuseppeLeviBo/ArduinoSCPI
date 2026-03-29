@@ -19,10 +19,15 @@ Funzioni principali attualmente implementate:
 - controllo uscite digitali sui pin `D2..D13`
 - controllo PWM sui pin `D9` e `D10`
 - controllo servo sui pin `D9` e `D10`
+- query servo: ultimo angolo impostato e stato attach
 - trigger immediato, analogico o digitale
+- gestione pendenza trigger (`TRIG:SLOP POS|NEG`) anche su trigger digitale (edge)
 - abilitazione/disabilitazione delle risposte di conferma `OK`
+- gestione errori SCPI tramite `SYST:ERR?` e pulizia stato con `*CLS`
+- selezione riferimento ADC (`CAL:REF DEF|INT|EXT`) e valore Vref software (`CAL:VREF`)
+- gestione avanzata GPIO con direzione/modalità (`DIG:MODE`) e lettura ingresso (`DIG:IN?`)
 - **(nuovo, firmware scope)** acquisizione bufferizzata tipo oscilloscopio con pre-trigger e post-trigger (`INIT` + `FETC?`)
-- **(nuovo, firmware scope)** scelta del fronte trigger (`TRIG:SLOP POS|NEG`)
+- **(nuovo, firmware scope)** stato acquisizione interrogabile (`ACQ:STAT?`)
 
 ### Varianti firmware nel repository
 
@@ -32,6 +37,25 @@ Il repository include ora **due sketch**:
 - `Arduino_SCOPE_SCPI.c`: versione estesa con funzionalità scope (acquisizione bufferizzata)
 
 > Questa documentazione mantiene i comandi comuni e aggiunge, in sezioni dedicate, le estensioni specifiche della versione `Arduino_SCOPE_SCPI.c`.
+
+### ⚠️ Compatibilità rapida tra firmware (importante)
+
+Per evitare ambiguità:
+
+- `Arduino_SCPI.c` è **davvero una versione base**.
+- molte estensioni documentate sotto sono **solo** per `Arduino_SCOPE_SCPI.c`.
+
+| Comando/famiglia | `Arduino_SCPI.c` (base) | `Arduino_SCOPE_SCPI.c` (esteso) |
+| --- | --- | --- |
+| `*IDN?`, `*RST`, `SYST:ACK` | ✅ | ✅ |
+| `*OPC?`, `*CLS`, `SYST:ERR?` | ❌ | ✅ |
+| `CAL:REF`, `CAL:VREF` | ❌ | ✅ |
+| `DIG:MODE`, `DIG:IN?` | ❌ | ✅ |
+| `TRIG:SLOP` | ❌ | ✅ |
+| `SOUR:SERVO?`, `SOUR:SERVO:ATT?` | ❌ | ✅ |
+| `ACQ:*`, `INIT`, `ABOR`, `FETC?` | ❌ | ✅ |
+
+> Se usi il firmware base `Arduino_SCPI.c`, i comandi non supportati rispondono con errore.
 
 ---
 
@@ -44,7 +68,9 @@ Lo strumento comunica tramite porta seriale USB.
 - **Formato generale risposte:**
   - valori numerici o stringhe per le query `...?`
   - `OK` per i comandi di configurazione, se gli ACK sono abilitati
-  - `ERR`, `ERR:MODE` o `ERR:TIMEOUT` in caso di errore
+  - `ERR` in caso di errore di comando/esecuzione
+
+> Per il dettaglio errore usare sempre `SYST:ERR?` (stile SCPI): il firmware mantiene l'ultimo errore e lo azzera dopo la lettura.
 
 ### Esempio
 
@@ -119,6 +145,8 @@ Configurazione -> Arm (INIT) -> Trigger + campionamento -> Fetch (FETC?)
 
 ## 5. Comandi standard
 
+> Nota compatibilità: in questa sezione `*OPC?`, `*CLS` e `SYST:ERR?` sono disponibili **solo** nel firmware `Arduino_SCOPE_SCPI.c`.
+
 ### `*IDN?`
 
 Restituisce l'identità dello strumento.
@@ -126,7 +154,7 @@ Restituisce l'identità dello strumento.
 **Risposta:**
 
 ```text
-OpenSCPI-Lab,Arduino-UNO,1.2
+OpenSCPI-Lab,Arduino-UNO,1.1_SCOPE
 ```
 
 ### `*RST`
@@ -141,8 +169,31 @@ Ripristina lo stato iniziale dello strumento:
 - PWM = `0`
 - servo sganciati (`detach`)
 - *(firmware scope)* fronte trigger = `POS`
+- riferimento ADC = `DEFAULT`, `vRef = 5.0`
+- modalità digitali riportate a `OUT`
 
 **Risposta:** `OK` se gli ACK sono attivi.
+
+### `*OPC?`
+
+Query di stato operazione completa:
+
+- `1` se non ci sono acquisizioni in corso (`ACQ_IDLE` o `ACQ_DONE`)
+- `0` se acquisizione armata/in corso
+
+### `*CLS`
+
+Azzera lo stato errore SCPI interno.
+
+### `SYST:ERR?`
+
+Restituisce e consuma l'ultimo errore SCPI in formato numerico+testo, ad esempio:
+
+```text
+0,"No error"
+-222,"Data out of range"
+-221,"Settings conflict"
+```
 
 ---
 
@@ -170,6 +221,52 @@ Restituisce:
 ---
 
 ## 7. Misure analogiche
+
+## ⚠️ Warning importante su riferimento ADC e precisione
+
+> `CAL:REF` e `CAL:VREF` sono comandi **solo** di `Arduino_SCOPE_SCPI.c`.  
+> La versione base `Arduino_SCPI.c` usa conversione fissa a 5V (`raw * (5.0 / 1023.0)`).
+
+Nel firmware `Arduino_SCOPE_SCPI.c` la conversione in volt usa:
+
+```text
+V = raw * (vRef / 1024.0)
+```
+
+dove `vRef` dipende dalla configurazione SCPI:
+
+- `CAL:REF DEF` -> riferimento ADC default Arduino (tipicamente 5V su UNO alimentato USB)
+- `CAL:REF INT` -> riferimento interno nominale 1.1V
+- `CAL:REF EXT` -> riferimento esterno sul pin AREF/Vref (hardware esterno)
+- `CAL:VREF <val>` -> imposta il valore numerico usato dal firmware per la conversione in volt
+
+Se si usa `INT` o `EXT` **senza** aggiornare correttamente `CAL:VREF`, le misure in volt e le soglie trigger analogiche possono risultare errate.
+
+> In particolare con riferimento interno a 1.1V, segnali oltre il fondo scala saturano il convertitore: verificare cablaggio/attenuazione prima delle misure.
+
+### Comandi calibrazione/riferimento
+
+### `CAL:REF <DEF|INT|EXT>`
+
+Imposta la sorgente di riferimento ADC:
+
+- `DEF` = default Arduino
+- `INT` = riferimento interno 1.1V
+- `EXT` = riferimento esterno su pin Vref/AREF
+
+### `CAL:REF?`
+
+Restituisce `DEF`, `INT` oppure `EXT`.
+
+### `CAL:VREF <value>`
+
+Imposta il valore di riferimento usato nei calcoli in volt.
+
+- range ammesso firmware scope: `0.5 < value <= 6.0`
+
+### `CAL:VREF?`
+
+Restituisce `vRef` con 3 decimali.
 
 ### Mappa canali analogici
 
@@ -222,12 +319,14 @@ Restituisce in una singola riga le tensioni dei sei canali analogici.
 1.0215,0.9785,0.1173,4.5015,0.0000,0.3324
 ```
 
-> La conversione in tensione usa il riferimento a 5 V.
-> Nota implementativa: `Arduino_SCPI.c` usa `raw * (5.0 / 1023.0)`, mentre `Arduino_SCOPE_SCPI.c` usa `raw * (5.0 / 1024.0)`.
+> Nota: nel firmware `Arduino_SCOPE_SCPI.c` la conversione usa sempre `raw * (vRef / 1024.0)`.
 
 ---
 
-## 8. Uscite digitali
+## 8. GPIO digitali (IN/OUT/PULLUP, input e output)
+
+> `DIG:MODE`, `DIG:MODE?` e `DIG:IN?` sono disponibili **solo** nel firmware `Arduino_SCOPE_SCPI.c`.  
+> Nel firmware base restano `DIG:OUT` e `DIG:OUT?`.
 
 ### Mappa canali digitali
 
@@ -249,6 +348,8 @@ Restituisce in una singola riga le tensioni dei sei canali analogici.
 ### `DIG:OUT <ch>,<val>`
 
 Imposta un'uscita digitale.
+
+**Prerequisito (solo firmware scope):** il canale deve essere in modalità `OUT` (vedi `DIG:MODE`), altrimenti il firmware restituisce errore di modalità (`SYST:ERR?` -> `-221`).
 
 - `<val>` può essere `0` oppure `1`
 - `<ch>` può essere indicato in due modi:
@@ -283,6 +384,26 @@ Se si usa `DIG:OUT` su un pin PWM (`D9` o `D10`):
 Legge lo stato logico dell'uscita specificata.
 
 Sono accettati sia gli indici SCPI sia i nomi pin `D<n>`.
+
+Anche qui il canale deve essere in modalità `OUT`.
+
+### `DIG:MODE <ch>,<IN|OUT|PULLUP>`
+
+Configura la modalità del pin digitale:
+
+- `IN` input floating
+- `OUT` uscita digitale
+- `PULLUP` input con pull-up interna
+
+`<ch>` accetta sia indice SCPI (`0..11`) sia pin (`D2..D13`).
+
+### `DIG:MODE? <ch>`
+
+Restituisce la modalità corrente: `IN`, `OUT` o `PULLUP`.
+
+### `DIG:IN? <ch>`
+
+Legge direttamente il livello logico del pin (`0`/`1`) in modalità input.
 
 ---
 
@@ -342,7 +463,19 @@ SOUR:SERVO 1,90
 
 Quando il canale non è ancora associato a un servo, il firmware esegue automaticamente `attach()` sul pin corrispondente.
 
-> Non è presente una query `SOUR:SERVO?` nel firmware attuale.
+### `SOUR:SERVO? <ch>` *(firmware scope)*
+
+Restituisce l'ultimo angolo impostato sul canale servo richiesto.
+
+- `<ch>`: `0..1`
+- valore tipico restituito: `0..180`
+
+### `SOUR:SERVO:ATT? <ch>` *(firmware scope)*
+
+Restituisce lo stato attuale di attach del servo:
+
+- `1` = servo attaccato
+- `0` = servo non attaccato (detach)
 
 ---
 
@@ -379,8 +512,8 @@ Restituisce la lista canali attualmente configurata come sequenza separata da vi
 Esegue l'acquisizione dei canali definiti in `ROUT:SCAN`.
 
 - se il trigger è soddisfatto, restituisce le tensioni dei canali selezionati
-- se la lista è vuota, restituisce `ERR:NOSCAN`
-- se il trigger va in timeout, restituisce `ERR:TIMEOUT`
+- se la lista è vuota o c'è errore di esecuzione, restituisce `ERR` (dettaglio con `SYST:ERR?`)
+- se il trigger va in timeout, restituisce `ERR` (dettaglio `-250,"Timeout error"` via `SYST:ERR?`)
 
 **Esempio risposta:**
 
@@ -434,7 +567,10 @@ In `ANA` la condizione diventa:
 - `POS`: trigger quando `V >= level`
 - `NEG`: trigger quando `V <= level`
 
-Per trigger digitali, il firmware scope mantiene il confronto sul livello logico atteso.
+Per trigger digitali (`TRIG:SOUR DIG`) il firmware usa trigger **edge**:
+
+- `TRIG:SLOP POS` = fronte LOW→HIGH
+- `TRIG:SLOP NEG` = fronte HIGH→LOW
 
 ### `TRIG:SLOP?` *(solo firmware scope)*
 
@@ -486,8 +622,10 @@ Quando si configura un trigger digitale, il pin selezionato viene messo in `INPU
 Se si tenta di usare `TRIG:CHAN` mentre la modalità è `IMM`, il firmware risponde:
 
 ```text
-ERR:MODE
+ERR
 ```
+
+(dettaglio: `-221,"Settings conflict"` da `SYST:ERR?`)
 
 ### `TRIG:CHAN?`
 
@@ -502,13 +640,13 @@ Restituisce:
 Imposta il livello di trigger.
 
 - in modalità `ANA`, la condizione di trigger è `V >= level` (oppure `V <= level` se `TRIG:SLOP NEG` nella versione scope)
-- in modalità `DIG`, il livello viene interpretato così:
-  - `level >= 0.5` -> attesa livello logico `HIGH`
-  - `level < 0.5` -> attesa livello logico `LOW`
+- in modalità `DIG`, il comando **non è ammesso** (`Settings conflict`, errore `-221`)
 
 ### `TRIG:LEV?`
 
 Restituisce il livello trigger corrente.
+
+> Nota: nelle revisioni più recenti il comportamento di `TRIG:LEV?` è stato corretto per essere coerente con la modalità trigger attiva; se la modalità non usa `TRIG:LEV`, il comando può restituire errore.
 
 ### `TRIG:TOUT <ms>`
 
@@ -547,14 +685,32 @@ Imposta il passo temporale di campionamento interno in **microsecondi** (variabi
 
 > Nota: nel codice la variabile locale si chiama `ms`, ma viene confrontata/assegnata direttamente a `micros()` come unità di microsecondi.
 
+### `ACQ:POIN?`
+
+Restituisce il numero di punti configurato.
+
+### `ACQ:TINT?`
+
+Restituisce il passo temporale in microsecondi.
+
+### `ACQ:STAT?`
+
+Restituisce lo stato corrente della macchina acquisizione:
+
+- `IDLE`
+- `PREFILL`
+- `ARMED`
+- `POST`
+- `DONE`
+
 ### `INIT`
 
 Arma l'acquisizione scope.
 
 Controlli effettuati:
 
-- se `ROUT:SCAN` non è configurato -> `ERR:NOSCAN`
-- se `ACQ:POIN * numero_canali_scan > 300` -> `ERR:MEM`
+- se `ROUT:SCAN` non è configurato -> `ERR` (`-200,"Execution error"`)
+- se `ACQ:POIN * numero_canali_scan > 300` -> `ERR` (`-222,"Data out of range"`)
 
 Se valido, entra in stato `ACQ_PREFILL`.
 
@@ -568,11 +724,11 @@ Attende il completamento dell'acquisizione e poi restituisce i dati acquisiti.
 
 Comportamento:
 
-- se non armato (`ACQ_IDLE`) -> `ERR:NOTARMED`
-- timeout interno fetch di 2 secondi -> `ERR:TIMEOUT`
+- se non armato (`ACQ_IDLE`) -> `ERR` (`-200,"Execution error"`)
+- timeout interno fetch di 2 secondi -> `ERR` (`-250,"Timeout error"`)
 - in caso positivo, stampa `acqPoints` righe
 - ogni riga contiene i canali della scan corrente separati da virgola
-- valori convertiti in volt con `raw * (5.0 / 1024.0)`
+- valori convertiti in volt con `raw * (vRef / 1024.0)`
 
 Formato output (esempio con 2 canali in scan):
 
@@ -634,8 +790,8 @@ READ?
 ```text
 ROUT:SCAN (@0:2)
 TRIG:SOUR DIG
+TRIG:SLOP POS
 TRIG:CHAN D2
-TRIG:LEV 1
 TRIG:TOUT 5000
 READ?
 ```
@@ -659,7 +815,7 @@ FETC?
 ## 15. Limiti attuali
 
 - firmware pensato per **Arduino UNO / ATmega328P**
-- tensioni calcolate assumendo riferimento ADC a **5 V**
+- tensioni calcolate usando `vRef` configurabile via `CAL:REF`/`CAL:VREF` (default 5V)
 - il trigger si applica alla lettura `READ?` e, nella versione scope, anche al ciclo `INIT`/`FETC?`
 - il firmware non implementa un parser SCPI completo, ma un sottoinsieme pratico
 - nella variante `Arduino_SCOPE_SCPI.c` la memoria totale dei campioni è limitata a `300` valori ADC complessivi
