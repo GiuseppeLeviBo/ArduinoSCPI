@@ -29,7 +29,7 @@ void setError(ScpiError err) {
   if(ackEnabled) Serial.println(F("ERR")); 
 }
 
-/* ---------- Prototipi Funzioni (C++ Best Practice) ---------- */
+/* ---------- Prototipi Funzioni ---------- */
 float readVolt(uint8_t ch);
 bool checkTriggerInstant();
 bool isValidPwmChannel(int ch);
@@ -56,6 +56,7 @@ DigMode digitalMode[digitalPinCount];
 bool digitalState[digitalPinCount]; 
 
 uint8_t pwmValue[2];
+uint8_t servoAngle[2]; 
 bool servoAttached[2];
 const uint8_t pwmPinCount = sizeof(pwmPins) / sizeof(pwmPins[0]);
 
@@ -180,6 +181,7 @@ void resetDevice() {
   for(uint8_t i = 0; i < pwmPinCount; i++) {
     if(servoAttached[i]) { servos[i].detach(); servoAttached[i] = false; }
     pwmValue[i] = 0;
+    servoAngle[i] = 0; 
     analogWrite(pwmPins[i], 0);
   }
 
@@ -296,7 +298,7 @@ void processCommand(String &cmd)
   cmd.trim();
 
   /* SYSTEM & IEEE-488.2 COMPATIBILITY */
-  if(cmd == F("*IDN?")) { Serial.println(F("OpenSCPI-Lab,Arduino-UNO,1.1_SCOPE")); return; }
+  if(cmd == F("*IDN?")) { Serial.println(F("OpenSCPI-Lab,Arduino-UNO,1.0-RC2")); return; }
   if(cmd == F("*RST")) { resetDevice(); sendAck(); return; }
   
   if(cmd == F("*OPC?")) { 
@@ -502,9 +504,22 @@ void processCommand(String &cmd)
     if(angle >= 0 && angle <= 180) {
       if(!servoAttached[ch]) { servos[ch].attach(pwmPins[ch]); servoAttached[ch] = true; }
       servos[ch].write(angle);
+      servoAngle[ch] = angle; 
       sendAck(); return;
     }
     setError(ERR_PARAM_RANGE); return;
+  }
+
+  if(cmd.startsWith(F("SOUR:SERVO? "))) {
+    int ch = parseChannel(cmd.substring(12));
+    if(!isValidPwmChannel(ch)) { setError(ERR_PARAM_RANGE); return; }
+    Serial.println(servoAngle[ch]); return;
+  }
+
+  if(cmd.startsWith(F("SOUR:SERVO:ATT? "))) {
+    int ch = parseChannel(cmd.substring(16));
+    if(!isValidPwmChannel(ch)) { setError(ERR_PARAM_RANGE); return; }
+    Serial.println(servoAttached[ch] ? F("1") : F("0")); return;
   }
 
   /* TRIGGER */
@@ -557,7 +572,7 @@ void processCommand(String &cmd)
   }
   
   if(cmd.startsWith(F("TRIG:LEV "))) { 
-    if(trigMode == TRIG_DIG) { setError(ERR_MODE); return; } // FIX: Trigger digitale è solo edge ora
+    if(trigMode == TRIG_DIG) { setError(ERR_MODE); return; } 
     
     float lev = cmd.substring(9).toFloat(); 
     if(trigMode == TRIG_ANA && (lev < 0.0 || lev > vRef)) { setError(ERR_PARAM_RANGE); return; }
@@ -565,11 +580,7 @@ void processCommand(String &cmd)
     trigLevel = lev;
     sendAck(); return; 
   }
-  if(cmd == F("TRIG:LEV?")) { 
-    if(trigMode == TRIG_DIG) { setError(ERR_MODE); return; } // Rifiuta la lettura in digitale
-    Serial.println(trigLevel,3); 
-    return; 
-  }
+  if(cmd == F("TRIG:LEV?")) { Serial.println(trigLevel,3); return; }
 
   if(cmd.startsWith(F("TRIG:TOUT "))) {
     long parsedTout = cmd.substring(10).toInt();
@@ -623,7 +634,7 @@ void processCommand(String &cmd)
   if(cmd == F("ABOR")) { acqState = ACQ_IDLE; sendAck(); return; }
 
   if(cmd == F("FETC?")) {
-    if(scanCount == 0) { setError(ERR_EXECUTION); return; } // FIX: Guardia se manca la scan list
+    if(scanCount == 0) { setError(ERR_EXECUTION); return; } 
     if(acqState == ACQ_IDLE) { setError(ERR_EXECUTION); return; } 
     
     unsigned long waitStart = millis();
