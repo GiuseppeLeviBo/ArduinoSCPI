@@ -19,6 +19,7 @@ Funzioni principali attualmente implementate:
 - controllo uscite digitali sui pin `D2..D13`
 - controllo PWM sui pin `D9` e `D10`
 - controllo servo sui pin `D9` e `D10`
+- query servo: ultimo angolo impostato e stato attach
 - trigger immediato, analogico o digitale
 - gestione pendenza trigger (`TRIG:SLOP POS|NEG`) anche su trigger digitale (edge)
 - abilitazione/disabilitazione delle risposte di conferma `OK`
@@ -51,6 +52,7 @@ Per evitare ambiguità:
 | `CAL:REF`, `CAL:VREF` | ❌ | ✅ |
 | `DIG:MODE`, `DIG:IN?` | ❌ | ✅ |
 | `TRIG:SLOP` | ❌ | ✅ |
+| `SOUR:SERVO?`, `SOUR:SERVO:ATT?` | ❌ | ✅ |
 | `ACQ:*`, `INIT`, `ABOR`, `FETC?` | ❌ | ✅ |
 
 > Se usi il firmware base `Arduino_SCPI.c`, i comandi non supportati rispondono con errore.
@@ -461,7 +463,19 @@ SOUR:SERVO 1,90
 
 Quando il canale non è ancora associato a un servo, il firmware esegue automaticamente `attach()` sul pin corrispondente.
 
-> Non è presente una query `SOUR:SERVO?` nel firmware attuale.
+### `SOUR:SERVO? <ch>` *(firmware scope)*
+
+Restituisce l'ultimo angolo impostato sul canale servo richiesto.
+
+- `<ch>`: `0..1`
+- valore tipico restituito: `0..180`
+
+### `SOUR:SERVO:ATT? <ch>` *(firmware scope)*
+
+Restituisce lo stato attuale di attach del servo:
+
+- `1` = servo attaccato
+- `0` = servo non attaccato (detach)
 
 ---
 
@@ -631,6 +645,8 @@ Imposta il livello di trigger.
 ### `TRIG:LEV?`
 
 Restituisce il livello trigger corrente.
+
+> Nota: nelle revisioni più recenti il comportamento di `TRIG:LEV?` è stato corretto per essere coerente con la modalità trigger attiva; se la modalità non usa `TRIG:LEV`, il comando può restituire errore.
 
 ### `TRIG:TOUT <ms>`
 
