@@ -29,6 +29,7 @@ Funzioni principali attualmente implementate:
 - **(nuovo, firmware scope)** acquisizione bufferizzata tipo oscilloscopio con pre-trigger e post-trigger (`INIT` + `FETC?`)
 - **(nuovo, firmware scope)** stato acquisizione interrogabile (`ACQ:STAT?`)
 
+
 ### Varianti firmware nel repository
 
 Il repository include ora **due sketch**:
@@ -38,11 +39,30 @@ Il repository include ora **due sketch**:
 
 > Questa documentazione mantiene i comandi comuni e aggiunge, in sezioni dedicate, le estensioni specifiche della versione `Arduino_SCOPE_SCPI.c`.
 
+### Gestione errori
+
+Il comportamento degli errori dipende dal firmware utilizzato:
+
+#### Firmware base (`Arduino_SCPI.c`)
+- restituisce `ERR` oppure stringhe semplici (es. `ERR:TIMEOUT`)
+
+#### Firmware scope (`Arduino_SCOPE_SCPI.c`)
+- restituisce `ERR` come risposta breve
+- il dettaglio errore è disponibile tramite:
+
+```text
+SYST:ERR?
+0,"No error"
+-222,"Data out of range"
+-221,"Settings conflict"
+-250,"Timeout error"
+```
 ### ⚠️ Compatibilità rapida tra firmware (importante)
 
 Per evitare ambiguità:
 
 - `Arduino_SCPI.c` è **davvero una versione base**.
+- Può servire come punto di partenza per sviluppare un vostro firmware.
 - molte estensioni documentate sotto sono **solo** per `Arduino_SCOPE_SCPI.c`.
 
 | Comando/famiglia | `Arduino_SCPI.c` (base) | `Arduino_SCOPE_SCPI.c` (esteso) |
@@ -154,7 +174,11 @@ Restituisce l'identità dello strumento.
 **Risposta:**
 
 ```text
-OpenSCPI-Lab,Arduino-UNO,1.1_SCOPE
+OpenSCPI-Lab,Arduino-UNO,<firmware-version>
+> La stringa di versione dipende dal firmware caricato:
+>
+> - `Arduino_SCPI.c` (base): es. `1.2`
+> - `Arduino_SCOPE_SCPI.c` (scope): es. `1.0-RC2`
 ```
 
 ### `*RST`
@@ -267,7 +291,38 @@ Imposta il valore di riferimento usato nei calcoli in volt.
 ### `CAL:VREF?`
 
 Restituisce `vRef` con 3 decimali.
+### ⚠️ Warning importante su ADC reference / VREF (AVR / Arduino UNO)
 
+Il comando `CAL:REF` cambia il riferimento dell'ADC tramite `analogReference(...)`.
+
+#### Comportamento fondamentale
+
+- il riferimento ADC è **globale**, non per singolo canale
+- quindi il cambio di `CAL:REF` influenza **tutti** gli ingressi analogici `A0..A5`
+- `CAL:VREF` modifica solo il valore software usato per la conversione in volt
+
+#### Limitazioni pratiche su ATmega328P (Arduino UNO)
+
+Il cambio di riferimento ADC non è sempre affidabile quando effettuato più volte durante l'esecuzione.
+
+Durante i test è stato osservato che la sequenza:
+
+```text
+CAL:REF INT
+CAL:REF DEF
+CAL:REF INT
+```
+può **non ripristinare correttamente il riferimento interno** senza reset del microcontrollore.
+
+Questo comportamento è dovuto a limitazioni dell'ADC AVR e/o della libreria Arduino, non al parser SCPI.
+
+Raccomandazioni:
+- evitare cambi frequenti di CAL:REF
+- impostare il riferimento una sola volta all'inizio
+- scartare le prime letture dopo un cambio di reference
+- se il riferimento interno non torna operativo:
+-- eseguire *RST
+-- oppure power-cycle della board
 ### Mappa canali analogici
 
 | Canale | Pin |
@@ -683,7 +738,6 @@ Imposta il passo temporale di campionamento interno in **microsecondi** (variabi
 - valore ammesso: `> 0`
 - errore su valore non valido: `ERR:VAL`
 
-> Nota: nel codice la variabile locale si chiama `ms`, ma viene confrontata/assegnata direttamente a `micros()` come unità di microsecondi.
 
 ### `ACQ:POIN?`
 
