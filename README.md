@@ -32,12 +32,16 @@ Funzioni principali attualmente implementate:
 
 ### Varianti firmware nel repository
 
-Il repository include ora **due sketch**:
+Il repository include ora **tre firmware/documenti principali**:
 
 - `Arduino_SCPI.c`: versione base/leggera (comandi SCPI essenziali)
 - `Arduino_SCOPE_SCPI.c`: versione estesa con funzionalità scope (acquisizione bufferizzata)
+- `WEMOS_D1_R32_SCPI/WEMOS_D1_R32_SCPI.ino`: variante ESP32 per WEMOS D1 R32
+- `README_D1R32.md`: manuale operativo della variante WEMOS D1 R32
 
 > Questa documentazione mantiene i comandi comuni e aggiunge, in sezioni dedicate, le estensioni specifiche della versione `Arduino_SCOPE_SCPI.c`.
+>
+> Per la variante ESP32/WEMOS D1 R32 vedi [README_D1R32.md](README_D1R32.md).
 
 ### Gestione errori
 
