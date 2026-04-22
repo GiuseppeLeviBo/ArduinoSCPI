@@ -2,6 +2,12 @@
 
 Manuale operativo per lo sketch [WEMOS_D1_R32_SCPI.ino](WEMOS_D1_R32_SCPI/WEMOS_D1_R32_SCPI.ino).
 
+Documenti collegati:
+
+- [SPEC_WEMOS_D1_R32.md](SPEC_WEMOS_D1_R32.md)
+- [SPEC_WIFI_D1_R32.md](SPEC_WIFI_D1_R32.md)
+- [TEST_PLAN_WIFI_D1_R32.md](TEST_PLAN_WIFI_D1_R32.md)
+
 ## 1. Panoramica
 
 Questo firmware porta OpenSCPI-Lab su **WEMOS D1 R32 / ESP32** sfruttando funzioni native della piattaforma:
