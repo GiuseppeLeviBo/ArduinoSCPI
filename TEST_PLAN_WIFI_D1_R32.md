@@ -37,10 +37,26 @@ Atteso:
 - risposta entro timeout
 - nessun blocco dovuto al Wi-Fi
 
-### T02 - Scan reti
+### T02 - WIFI ON/OFF base
 
 Passi:
 
+- invia `SYST:WIFI:ON`
+- interroga `SYST:WIFI:STAT?`
+- invia `SYST:WIFI:OFF`
+- interroga `SYST:WIFI:STAT?`
+
+Atteso:
+
+- risposta `IDLE` o `CONNECTED` dopo `SYST:WIFI:ON`
+- risposta `OFF` dopo `SYST:WIFI:OFF`
+- seriale sempre responsiva
+
+### T03 - Scan reti
+
+Passi:
+
+- invia `SYST:WIFI:ON`
 - invia `SYST:WIFI:SCAN?`
 
 Atteso:
@@ -49,10 +65,11 @@ Atteso:
 - formato coerente
 - nessun riavvio o freeze
 
-### T03 - Join rete valida
+### T04 - Join rete valida
 
 Passi:
 
+- invia `SYST:WIFI:ON`
 - invia `SYST:WIFI:JOIN <ssid>,<pw>`
 - interroga `SYST:WIFI:STAT?`
 - interroga `SYST:WIFI:IP?`
@@ -62,10 +79,11 @@ Atteso:
 - stato finale `CONNECTED`
 - IP valido
 
-### T04 - Join rete invalida
+### T05 - Join rete invalida
 
 Passi:
 
+- `SYST:WIFI:ON`
 - invia join con password errata
 
 Atteso:
@@ -73,10 +91,11 @@ Atteso:
 - stato `ERROR` o equivalente
 - seriale ancora responsiva
 
-### T05 - Persistenza credenziali
+### T06 - Persistenza credenziali
 
 Passi:
 
+- `SYST:WIFI:ON`
 - `SYST:WIFI:SAVE ON`
 - join rete valida
 - reboot
@@ -87,7 +106,7 @@ Atteso:
 - reconnect automatico
 - seriale disponibile anche durante il reconnect
 
-### T06 - Forget credenziali
+### T07 - Forget credenziali
 
 Passi:
 
@@ -99,24 +118,28 @@ Atteso:
 - nessun auto-connect
 - boot locale pulito
 
-### T07 - Recovery da seriale
+### T08 - Recovery da seriale
 
 Passi:
 
 - Wi-Fi connesso
 - server TCP attivo
+- invia via seriale `SYST:WIFI:OFF`
+- interroga `SYST:WIFI:STAT?`
 - invia via seriale `SYST:NET:SCPI:STOP`
 - invia via seriale `SYST:WIFI:DISC`
 
 Atteso:
 
+- `SYST:WIFI:OFF` ha effetto immediato
 - entrambe le azioni eseguite subito
 - seriale sempre funzionante
 
-### T08 - ADC1 consentito con Wi-Fi attivo
+### T09 - ADC1 consentito con Wi-Fi attivo
 
 Passi:
 
+- `SYST:WIFI:ON`
 - connetti Wi-Fi
 - `GPIO:MODE GPIO35,ANA`
 - `MEAS:MVOLT? GPIO35`
@@ -125,22 +148,37 @@ Atteso:
 
 - misura valida
 
-### T09 - ADC2 vietato con Wi-Fi attivo
+### T10 - ADC2 vietato con Wi-Fi attivo
 
 Passi:
 
+- `SYST:WIFI:ON`
 - connetti Wi-Fi
+- `GPIO:MODE GPIO26,ANA`
+- `SYST:ERR?`
+
+Atteso:
+
+- `GPIO:MODE GPIO26,ANA` -> `ERR`
+- `SYST:ERR?` -> `-221`
+
+### T11 - ADC2 riabilitato con WIFI OFF
+
+Passi:
+
+- `SYST:WIFI:OFF`
 - `GPIO:MODE GPIO26,ANA`
 - `MEAS:MVOLT? GPIO26`
 
 Atteso:
 
-- errore `-221`
+- misura valida
 
-### T10 - Trigger analogico ADC1 con Wi-Fi attivo
+### T12 - Trigger analogico ADC1 con Wi-Fi attivo
 
 Passi:
 
+- `SYST:WIFI:ON`
 - connetti Wi-Fi
 - imposta trigger analogico su `GPIO35`
 
@@ -148,10 +186,11 @@ Atteso:
 
 - configurazione valida
 
-### T11 - Trigger analogico ADC2 con Wi-Fi attivo
+### T13 - Trigger analogico ADC2 con Wi-Fi attivo
 
 Passi:
 
+- `SYST:WIFI:ON`
 - connetti Wi-Fi
 - prova trigger analogico su `GPIO26`
 
@@ -159,10 +198,11 @@ Atteso:
 
 - errore `-221`
 
-### T12 - Acquisizione ADC1 con Wi-Fi attivo
+### T14 - Acquisizione ADC1 con Wi-Fi attivo
 
 Passi:
 
+- `SYST:WIFI:ON`
 - connetti Wi-Fi
 - scan su `GPIO35`
 - `INIT`
@@ -172,10 +212,11 @@ Atteso:
 
 - acquisizione valida
 
-### T13 - Acquisizione ADC2 con Wi-Fi attivo
+### T15 - Acquisizione ADC2 con Wi-Fi attivo
 
 Passi:
 
+- `SYST:WIFI:ON`
 - connetti Wi-Fi
 - scan su `GPIO26`
 - `INIT`
@@ -184,10 +225,11 @@ Atteso:
 
 - errore `-221`
 
-### T14 - Server TCP SCPI
+### T16 - Server TCP SCPI
 
 Passi:
 
+- `SYST:WIFI:ON`
 - connetti Wi-Fi
 - avvia server TCP
 - apri client da PC
@@ -198,7 +240,7 @@ Atteso:
 - risposta corretta
 - stesso comportamento SCPI della seriale
 
-### T15 - Arbitraggio seriale > TCP
+### T17 - Arbitraggio seriale > TCP
 
 Passi:
 
@@ -212,7 +254,7 @@ Atteso:
 
 ## 4. Matrice rapida atteso/fallimento
 
-| Caso | Wi-Fi OFF | Wi-Fi ON |
+| Caso | SYST:WIFI:OFF | SYST:WIFI:ON |
 | --- | --- | --- |
 | ADC1 | OK | OK |
 | ADC2 | OK | FAIL `-221` |

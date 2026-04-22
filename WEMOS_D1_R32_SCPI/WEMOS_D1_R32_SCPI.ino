@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <WiFi.h>
 #include <math.h>
 /*
 #if !defined(ARDUINO_ARCH_ESP32)
@@ -154,6 +155,11 @@ uint8_t dacValue[kDacPinCount];
 
 RadioMode radioMode = RADIO_OFF;
 bool adc2Locked = false;
+bool wifiScanInProgress = false;
+int lastWifiScanCount = -1;
+wl_status_t lastWifiStatusCode = WL_IDLE_STATUS;
+String lastWifiTargetSsid;
+String lastWifiFailure;
 String lastRadioReason;
 
 String serialBuffer;
@@ -198,6 +204,11 @@ bool ensurePwmAttached(uint8_t pwmChannel);
 bool ensureServoAttached(uint8_t pwmChannel);
 bool ensurePinPwmAttached(uint8_t physicalIndex);
 uint32_t servoDutyFromAngle(uint8_t angle);
+bool setWifiEnabled(bool enabled);
+const char *wifiStatusText();
+const char *wifiAuthModeText(wifi_auth_mode_t authMode);
+const char *wifiLinkStatusText(wl_status_t status);
+bool parseWifiJoinArgs(const String &input, String &ssid, String &password);
 
 void sendAck() {
   if (ackEnabled) {
@@ -306,6 +317,23 @@ const char *modeToText(GpioMode mode) {
     case MODE_ANA: return "ANA";
     default: return "UNKNOWN";
   }
+}
+
+bool isModeBlockedByRadio(uint8_t physicalIndex, GpioMode mode) {
+  if (physicalIndex >= kPhysicalPinCount) {
+    return false;
+  }
+  return mode == MODE_ANA &&
+         pinUsesAdc2(physicalIndex) &&
+         wifiBtArbiterStubIsAdc2Locked();
+}
+
+void printModeStatus(uint8_t physicalIndex) {
+  Serial.print(modeToText(pinModes[physicalIndex]));
+  if (isModeBlockedByRadio(physicalIndex, pinModes[physicalIndex])) {
+    Serial.print(F(",NAVAIL,RADIO"));
+  }
+  Serial.println();
 }
 
 void printCapabilities(uint8_t physicalIndex) {
@@ -466,6 +494,98 @@ uint32_t servoDutyFromAngle(uint8_t angle) {
   const uint32_t periodUs = 1000000UL / SERVO_FREQ_HZ;
   const uint32_t maxDuty = (1UL << SERVO_RES_BITS) - 1UL;
   return (pulseUs * maxDuty) / periodUs;
+}
+
+bool setWifiEnabled(bool enabled) {
+  if (enabled) {
+    WiFi.persistent(false);
+    WiFi.setAutoReconnect(false);
+    if (!WiFi.mode(WIFI_STA)) {
+      return false;
+    }
+    WiFi.disconnect(false, false);
+    radioMode = RADIO_WIFI;
+    adc2Locked = true;
+    lastWifiStatusCode = WiFi.status();
+    lastWifiFailure = "";
+    return true;
+  }
+
+  WiFi.scanDelete();
+  WiFi.disconnect(true, false);
+  WiFi.mode(WIFI_OFF);
+  radioMode = RADIO_OFF;
+  adc2Locked = false;
+  wifiScanInProgress = false;
+  lastWifiStatusCode = WL_IDLE_STATUS;
+  lastWifiFailure = "";
+  return true;
+}
+
+const char *wifiStatusText() {
+  if (radioMode == RADIO_OFF) {
+    return "OFF";
+  }
+  if (wifiScanInProgress) {
+    return "SCANNING";
+  }
+  if (WiFi.isConnected()) {
+    return "CONNECTED";
+  }
+  return "IDLE";
+}
+
+const char *wifiAuthModeText(wifi_auth_mode_t authMode) {
+  switch (authMode) {
+    case WIFI_AUTH_OPEN: return "OPEN";
+    case WIFI_AUTH_WEP: return "WEP";
+    case WIFI_AUTH_WPA_PSK: return "WPA";
+    case WIFI_AUTH_WPA2_PSK: return "WPA2";
+    case WIFI_AUTH_WPA_WPA2_PSK: return "WPA/WPA2";
+    case WIFI_AUTH_WPA2_ENTERPRISE: return "WPA2-ENT";
+    case WIFI_AUTH_WPA3_PSK: return "WPA3";
+    case WIFI_AUTH_WPA2_WPA3_PSK: return "WPA2/WPA3";
+    case WIFI_AUTH_WAPI_PSK: return "WAPI";
+    default: return "UNKNOWN";
+  }
+}
+
+const char *wifiLinkStatusText(wl_status_t status) {
+  switch (status) {
+    case WL_IDLE_STATUS: return "WL_IDLE_STATUS";
+    case WL_NO_SSID_AVAIL: return "WL_NO_SSID_AVAIL";
+    case WL_SCAN_COMPLETED: return "WL_SCAN_COMPLETED";
+    case WL_CONNECTED: return "WL_CONNECTED";
+    case WL_CONNECT_FAILED: return "WL_CONNECT_FAILED";
+    case WL_CONNECTION_LOST: return "WL_CONNECTION_LOST";
+    case WL_DISCONNECTED: return "WL_DISCONNECTED";
+    default: return "WL_UNKNOWN";
+  }
+}
+
+bool parseWifiJoinArgs(const String &input, String &ssid, String &password) {
+  int comma = input.indexOf(',');
+  if (comma < 0) {
+    return false;
+  }
+
+  ssid = input.substring(0, comma);
+  password = input.substring(comma + 1);
+  ssid.trim();
+  password.trim();
+
+  if (ssid.length() == 0) {
+    return false;
+  }
+
+  if (ssid.startsWith("\"") && ssid.endsWith("\"") && ssid.length() >= 2) {
+    ssid = ssid.substring(1, ssid.length() - 1);
+  }
+  if (password.startsWith("\"") && password.endsWith("\"") && password.length() >= 2) {
+    password = password.substring(1, password.length() - 1);
+  }
+
+  return ssid.length() > 0;
 }
 
 bool resolvePhysicalPin(const String &token, int &physicalIndex) {
@@ -958,8 +1078,10 @@ void resetDevice() {
 
   lastError = ERR_NONE;
   ackEnabled = true;
-  radioMode = RADIO_OFF;
-  adc2Locked = false;
+  setWifiEnabled(false);
+  lastWifiScanCount = -1;
+  lastWifiTargetSsid = "";
+  lastWifiFailure = "";
   lastRadioReason = "";
 
   currentAnalogChannel = 0;
@@ -1075,12 +1197,215 @@ void processCommand(String &cmd) {
   }
 
   if (cmd == F("SYST:CAP?")) {
-    Serial.println(F("ESP32,GPIO_MODE,GPIO_CAP,ADC12,ADC_MV,PWM_LEDC_ANY,PWM_FREQ,DAC2,SERVO_LEDC,TRIG,ACQ,ADC2_GUARD"));
+    Serial.println(F("ESP32,GPIO_MODE,GPIO_CAP,ADC12,ADC_MV,PWM_LEDC_ANY,PWM_FREQ,DAC2,SERVO_LEDC,TRIG,ACQ,ADC2_GUARD,WIFI_CTRL,WIFI_SCAN"));
     return;
   }
 
   if (cmd == F("SYST:PINMAP?")) {
     Serial.println(F("DCH0=GPIO26,DCH1=GPIO25,DCH2=GPIO17,DCH3=GPIO16,DCH4=GPIO27,DCH5=GPIO14,DCH6=GPIO12,DCH7=GPIO13,DCH8=GPIO5,DCH9=GPIO23,DCH10=GPIO19,DCH11=GPIO18;AN0=GPIO2,AN1=GPIO4,AN2=GPIO35,AN3=GPIO34,AN4=GPIO36,AN5=GPIO39,AN6=GPIO26,AN7=GPIO25,AN8=GPIO27,AN9=GPIO14,AN10=GPIO12,AN11=GPIO13"));
+    return;
+  }
+
+  if (cmd == F("SYST:WIFI:ON")) {
+    if (!setWifiEnabled(true)) {
+      setError(ERR_EXECUTION);
+      return;
+    }
+    sendAck();
+    return;
+  }
+
+  if (cmd == F("SYST:WIFI:OFF")) {
+    if (!setWifiEnabled(false)) {
+      setError(ERR_EXECUTION);
+      return;
+    }
+    sendAck();
+    return;
+  }
+
+  if (cmd == F("SYST:WIFI:STAT?")) {
+    Serial.println(wifiStatusText());
+    return;
+  }
+
+  if (cmd == F("SYST:WIFI:SCAN?")) {
+    if (radioMode == RADIO_OFF) {
+      setError(ERR_MODE);
+      return;
+    }
+
+    wifiScanInProgress = true;
+    int networkCount = WiFi.scanNetworks();
+    wifiScanInProgress = false;
+    lastWifiScanCount = networkCount;
+    lastWifiStatusCode = WiFi.status();
+
+    if (networkCount < 0) {
+      lastWifiFailure = "SCAN_FAILED";
+      setError(ERR_EXECUTION);
+      return;
+    }
+
+    lastWifiFailure = "";
+    Serial.println(F("SSID,RSSI,AUTH,CHAN"));
+    for (int i = 0; i < networkCount; ++i) {
+      Serial.print(WiFi.SSID(i));
+      Serial.print(",");
+      Serial.print(WiFi.RSSI(i));
+      Serial.print(",");
+      Serial.print(wifiAuthModeText(WiFi.encryptionType(i)));
+      Serial.print(",");
+      Serial.println(WiFi.channel(i));
+    }
+    WiFi.scanDelete();
+    return;
+  }
+
+  if (cmd.startsWith(F("SYST:WIFI:JOIN "))) {
+    String ssid;
+    String password;
+    if (!parseWifiJoinArgs(cmd.substring(15), ssid, password)) {
+      setError(ERR_PARAM_RANGE);
+      return;
+    }
+
+    lastWifiTargetSsid = ssid;
+    lastWifiFailure = "";
+
+    if (radioMode == RADIO_OFF && !setWifiEnabled(true)) {
+      lastWifiFailure = "RADIO_ENABLE_FAILED";
+      setError(ERR_EXECUTION);
+      return;
+    }
+
+    WiFi.begin(ssid.c_str(), password.c_str());
+    unsigned long start = millis();
+    while (millis() - start < 15000) {
+      wl_status_t status = WiFi.status();
+      lastWifiStatusCode = status;
+      if (status == WL_CONNECTED) {
+        radioMode = RADIO_WIFI;
+        adc2Locked = true;
+        lastWifiFailure = "";
+        sendAck();
+        return;
+      }
+      if (status == WL_CONNECT_FAILED) {
+        lastWifiFailure = "CONNECT_FAILED";
+        setError(ERR_EXECUTION);
+        return;
+      }
+      if (status == WL_NO_SSID_AVAIL) {
+        lastWifiFailure = "NO_SSID";
+        setError(ERR_EXECUTION);
+        return;
+      }
+      if (status == WL_CONNECTION_LOST) {
+        lastWifiFailure = "CONNECTION_LOST";
+        setError(ERR_EXECUTION);
+        return;
+      }
+      delay(200);
+    }
+    lastWifiStatusCode = WiFi.status();
+    lastWifiFailure = "JOIN_TIMEOUT";
+    setError(ERR_TIMEOUT);
+    return;
+  }
+
+  if (cmd == F("SYST:WIFI:DISC")) {
+    if (radioMode == RADIO_OFF) {
+      sendAck();
+      return;
+    }
+    WiFi.disconnect(false, false);
+    lastWifiStatusCode = WiFi.status();
+    lastWifiFailure = "";
+    sendAck();
+    return;
+  }
+
+  if (cmd == F("SYST:WIFI:IP?")) {
+    if (radioMode == RADIO_OFF || !WiFi.isConnected()) {
+      Serial.println(F("NONE"));
+      return;
+    }
+    Serial.println(WiFi.localIP());
+    return;
+  }
+
+  if (cmd == F("SYST:WIFI:RSSI?")) {
+    if (radioMode == RADIO_OFF || !WiFi.isConnected()) {
+      Serial.println(F("NONE"));
+      return;
+    }
+    Serial.println(WiFi.RSSI());
+    return;
+  }
+
+  if (cmd == F("SYST:WIFI:DBG:STAT?")) {
+    Serial.print(F("RADIO="));
+    Serial.print(radioMode == RADIO_OFF ? F("OFF") : F("ON"));
+    Serial.print(F(",STAT="));
+    Serial.print(wifiStatusText());
+    Serial.print(F(",WIFI_STATUS="));
+    Serial.print(wifiLinkStatusText(lastWifiStatusCode));
+    Serial.print(F(",CODE="));
+    Serial.println((int)lastWifiStatusCode);
+    return;
+  }
+
+  if (cmd == F("SYST:WIFI:DBG:SCAN:LAST?")) {
+    Serial.println(lastWifiScanCount);
+    return;
+  }
+
+  if (cmd == F("SYST:WIFI:DBG:SSID?")) {
+    if (lastWifiTargetSsid.length() == 0) {
+      Serial.println(F("NONE"));
+    } else {
+      Serial.println(lastWifiTargetSsid);
+    }
+    return;
+  }
+
+  if (cmd == F("SYST:WIFI:DBG:FAIL?")) {
+    if (lastWifiFailure.length() == 0) {
+      Serial.println(F("NONE"));
+    } else {
+      Serial.println(lastWifiFailure);
+    }
+    return;
+  }
+
+  if (cmd == F("SYST:WIFI:DBG:DIAG?")) {
+    Serial.print(F("RADIO="));
+    Serial.print(radioMode == RADIO_OFF ? F("OFF") : F("ON"));
+    Serial.print(F(",STAT="));
+    Serial.print(wifiStatusText());
+    Serial.print(F(",WIFI_STATUS="));
+    Serial.print(wifiLinkStatusText(lastWifiStatusCode));
+    Serial.print(F(",TARGET="));
+    if (lastWifiTargetSsid.length() == 0) {
+      Serial.print(F("NONE"));
+    } else {
+      Serial.print(lastWifiTargetSsid);
+    }
+    Serial.print(F(",IP="));
+    if (WiFi.isConnected()) Serial.print(WiFi.localIP());
+    else Serial.print(F("NONE"));
+    Serial.print(F(",RSSI="));
+    if (WiFi.isConnected()) Serial.print(WiFi.RSSI());
+    else Serial.print(F("NONE"));
+    Serial.print(F(",SCAN_LAST="));
+    Serial.print(lastWifiScanCount);
+    Serial.print(F(",LAST_FAIL="));
+    if (lastWifiFailure.length() == 0) {
+      Serial.println(F("NONE"));
+    } else {
+      Serial.println(lastWifiFailure);
+    }
     return;
   }
 
@@ -1285,6 +1610,10 @@ void processCommand(String &cmd) {
       setError(ERR_MODE);
       return;
     }
+    if (isModeBlockedByRadio((uint8_t)physicalIndex, newMode)) {
+      setError(ERR_MODE);
+      return;
+    }
 
     detachWaveformGeneratorsOnPin(kPhysicalPins[physicalIndex].gpio);
     if (newMode == MODE_IN) pinMode(kPhysicalPins[physicalIndex].gpio, INPUT);
@@ -1308,7 +1637,7 @@ void processCommand(String &cmd) {
       setError(ERR_PARAM_RANGE);
       return;
     }
-    Serial.println(modeToText(pinModes[physicalIndex]));
+    printModeStatus((uint8_t)physicalIndex);
     return;
   }
 

@@ -254,6 +254,51 @@ Valori attuali nel firmware:
 - default `ACQ:POIN = 64`
 - default `ACQ:TINT = 1000 us`
 
+### Wi-Fi
+
+Comandi attualmente disponibili:
+
+```text
+SYST:WIFI:ON
+SYST:WIFI:OFF
+SYST:WIFI:STAT?
+SYST:WIFI:SCAN?
+SYST:WIFI:JOIN "iPhone (8)","testR32."
+SYST:WIFI:DISC
+SYST:WIFI:IP?
+SYST:WIFI:RSSI?
+SYST:WIFI:DBG:STAT?
+SYST:WIFI:DBG:SSID?
+SYST:WIFI:DBG:FAIL?
+SYST:WIFI:DBG:DIAG?
+```
+
+Stati osservabili:
+
+- `OFF`: radio spenta
+- `IDLE`: radio attiva, non connessa
+- `SCANNING`: scansione in corso
+- `CONNECTED`: rete associata e IP valido
+
+Note:
+
+- SSID e password con spazi o parentesi sono supportati se quotati
+- `SYST:WIFI:OFF` libera subito i canali `ADC2`
+
+Comportamento GPIO con `ADC2` e radio attiva:
+
+```text
+GPIO:MODE GPIO26,ANA
+SYST:ERR?
+GPIO:MODE? GPIO26
+```
+
+Risposte attese:
+
+- `GPIO:MODE GPIO26,ANA` -> `ERR`
+- `SYST:ERR?` -> `-221,"Settings conflict"`
+- se il pin era gia' in analogico quando il Wi-Fi viene acceso: `GPIO:MODE? GPIO26` -> `ANA,NAVAIL,RADIO`
+
 ## 5. Esempi pratici
 
 ### LED integrato
@@ -312,15 +357,30 @@ INIT
 FETC?
 ```
 
+### Join Wi-Fi e diagnostica
+
+```text
+SYST:WIFI:ON
+SYST:WIFI:SCAN?
+SYST:WIFI:JOIN "iPhone (8)","testR32."
+SYST:WIFI:STAT?
+SYST:WIFI:IP?
+SYST:WIFI:RSSI?
+SYST:WIFI:DBG:DIAG?
+SYST:WIFI:DISC
+SYST:WIFI:OFF
+```
+
 ## 6. Sicurezza e note hardware
 
 - tutti i pin ESP32 sono da usare a `3.3 V`
 - non applicare `5 V` diretti agli ingressi
 - `GPIO34/35/36/39` sono solo input
-- `GPIO25 -> GPIO35` è un collegamento sicuro per test, perché `GPIO35` è solo ingresso
-- non collegare mai due uscite pilotate una contro l’altra
-- `GPIO2` è anche LED integrato e anche `A0`
-- i pin `ADC2` possono dare limitazioni quando sarà attivato il Wi-Fi
+- `GPIO25 -> GPIO35` e' un collegamento sicuro per test, perche' `GPIO35` e' solo ingresso
+- non collegare mai due uscite pilotate una contro l'altra
+- `GPIO2` e' anche LED integrato e anche `A0`
+- con `SYST:WIFI:ON` i pin `ADC2` sono bloccati per uso analogico
+- con `SYST:WIFI:OFF` i pin `ADC2` tornano disponibili
 
 ## 7. Stato attuale
 
@@ -331,5 +391,7 @@ Firmware testato con successo in modo pratico su board:
 - DAC su `GPIO25`
 - misura analogica della rampa DAC su `GPIO35`
 - acquisizione di un PWM campionato su ingresso analogico
+- scansione Wi-Fi, join/disconnect e diagnostica base
+- blocco `ADC2` con Wi-Fi attivo e rilascio immediato con `SYST:WIFI:OFF`
 
 Questo documento descrive lo stato reale dello sketch corrente, non una roadmap futura.

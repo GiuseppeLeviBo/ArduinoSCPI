@@ -50,6 +50,7 @@ Scelta di progetto:
 
 ### 3.1 Funzioni incluse
 
+- accensione/spegnimento esplicito del Wi-Fi
 - scansione reti Wi-Fi
 - join a rete `STA`
 - disconnessione
@@ -111,8 +112,10 @@ Da non salvare:
 
 ### 5.1 Stato e scansione
 
-- `SYST:WIFI:SCAN?`
+- `SYST:WIFI:ON`
+- `SYST:WIFI:OFF`
 - `SYST:WIFI:STAT?`
+- `SYST:WIFI:SCAN?`
 - `SYST:WIFI:RSSI?`
 - `SYST:WIFI:IP?`
 - `SYST:WIFI:MAC?`
@@ -120,7 +123,7 @@ Da non salvare:
 
 Formati:
 
-- `SYST:WIFI:STAT?` -> `OFF|IDLE|SCANNING|CONNECTING|CONNECTED|ERROR`
+- `SYST:WIFI:STAT?` -> `OFF|IDLE|SCANNING|CONNECTED`
 - `SYST:WIFI:SCAN?` -> elenco reti in formato CSV o una riga per rete
 
 Formato consigliato per `SCAN?`:
@@ -128,6 +131,12 @@ Formato consigliato per `SCAN?`:
 ```text
 SSID,RSSI,AUTH,CHAN
 ```
+
+Semantica di base:
+
+- `SYST:WIFI:ON` abilita lo stack Wi-Fi ma non implica da solo una connessione riuscita
+- `SYST:WIFI:OFF` spegne il Wi-Fi runtime e libera immediatamente i canali ADC2
+- `SYST:WIFI:STAT?` espone lo stato runtime del sottosistema Wi-Fi
 
 ### 5.2 Configurazione e connessione
 
@@ -139,12 +148,25 @@ SSID,RSSI,AUTH,CHAN
 
 Semantica:
 
+- `SYST:WIFI:ON` e' il prerequisito logico per `SCAN?`, `JOIN` e server TCP
+- `SYST:WIFI:OFF` forza:
+  - disconnessione
+  - stop del server TCP SCPI
+  - rilascio del vincolo ADC2
 - `JOIN` tenta la connessione immediata
 - se `SAVE=ON`, le credenziali vengono memorizzate
 - `FORGET` cancella le credenziali memorizzate
 - `DISC` disconnette ma non implica necessariamente `FORGET`
 
-### 5.3 Server SCPI su TCP
+### 5.3 Diagnostica minima
+
+- `SYST:WIFI:DBG:STAT?`
+- `SYST:WIFI:DBG:SCAN:LAST?`
+- `SYST:WIFI:DBG:SSID?`
+- `SYST:WIFI:DBG:FAIL?`
+- `SYST:WIFI:DBG:DIAG?`
+
+### 5.4 Server SCPI su TCP
 
 - `SYST:NET:SCPI:PORT <n>`
 - `SYST:NET:SCPI:PORT?`
@@ -178,6 +200,7 @@ La seriale ha sempre precedenza.
 
 Conseguenze:
 
+- un comando seriale `SYST:WIFI:OFF` deve essere sempre eseguito
 - un comando seriale puo' fermare il server TCP
 - un comando seriale puo' forzare `DISC` o `FORGET`
 - il parser seriale non deve aspettare lock detenuti dal layer Wi-Fi
@@ -194,7 +217,7 @@ In v1:
 
 ### 7.1 Regola globale
 
-Se Wi-Fi e' attivo:
+Se `SYST:WIFI:ON` e il Wi-Fi runtime e' attivo:
 
 - tutti i canali ADC2 sono vietati
 
@@ -207,6 +230,11 @@ Questo si applica a:
 - `TRIG:CHAN`
 - `INIT`
 - `FETC?`
+
+Se `SYST:WIFI:OFF`:
+
+- i canali ADC2 tornano utilizzabili
+- il server TCP SCPI non deve essere disponibile
 
 ### 7.2 Canali consentiti con Wi-Fi attivo
 
@@ -223,7 +251,12 @@ Vietati:
 
 Se viene richiesto un canale ADC2 con Wi-Fi attivo:
 
+- `GPIO:MODE GPIO<n>,ANA` deve fallire immediatamente con `-221`
 - risposta errore `-221,"Settings conflict"`
+
+Se un pin ADC2 era gia' in `ANA` e poi la radio viene accesa:
+
+- `GPIO:MODE? GPIO<n>` deve indicare `ANA,NAVAIL,RADIO`
 
 Nessun tentativo automatico di:
 
@@ -263,6 +296,8 @@ Principi:
 
 ### 10.1 Rete base
 
+- `SYST:WIFI:ON` porta la radio in stato attivo senza bloccare la seriale
+- `SYST:WIFI:OFF` spegne la radio senza bloccare la seriale
 - scan reti disponibile
 - join a rete valida
 - join a rete invalida con errore controllato
@@ -271,6 +306,7 @@ Principi:
 
 ### 10.2 Recovery
 
+- mentre il Wi-Fi e' attivo, un comando seriale `SYST:WIFI:OFF` deve funzionare sempre
 - mentre il Wi-Fi e' attivo, un comando seriale `DISC` deve funzionare sempre
 - mentre il server TCP e' attivo, `SYST:NET:SCPI:STOP` via seriale deve funzionare sempre
 - `FORGET` via seriale deve ripristinare il boot locale senza auto-connect
@@ -278,6 +314,7 @@ Principi:
 ### 10.3 ADC2 policy
 
 - con Wi-Fi attivo, `MEAS:MVOLT? GPIO35` deve funzionare
+- con Wi-Fi attivo, `GPIO:MODE GPIO26,ANA` deve fallire con `-221`
 - con Wi-Fi attivo, `MEAS:MVOLT? GPIO25` deve fallire con `-221`
 - con Wi-Fi attivo, `INIT` su scan con `GPIO35` deve funzionare
 - con Wi-Fi attivo, `INIT` su scan con `GPIO26` deve fallire con `-221`
