@@ -112,6 +112,8 @@ static const uint32_t SERVO_FREQ_HZ = 50;
 static const uint8_t SERVO_RES_BITS = 16;
 static const uint16_t SERVO_MIN_US = 500;
 static const uint16_t SERVO_MAX_US = 2500;
+static const uint16_t DEFAULT_SCPI_TCP_PORT = 5025;
+static const uint32_t SCPI_CLIENT_IDLE_MS = 300000;
 
 ScpiError lastError = ERR_NONE;
 bool ackEnabled = true;
@@ -163,6 +165,15 @@ String lastWifiFailure;
 String lastRadioReason;
 
 String serialBuffer;
+String socketBuffer;
+Print *gScpiOut = &Serial;
+WiFiServer *scpiTcpServer = nullptr;
+WiFiClient scpiTcpClient;
+bool scpiTcpEnabled = false;
+uint16_t scpiTcpPort = DEFAULT_SCPI_TCP_PORT;
+unsigned long scpiTcpLastActivity = 0;
+
+#define SCPI_OUT (*gScpiOut)
 
 void sendAck();
 void setError(ScpiError err);
@@ -209,17 +220,22 @@ const char *wifiStatusText();
 const char *wifiAuthModeText(wifi_auth_mode_t authMode);
 const char *wifiLinkStatusText(wl_status_t status);
 bool parseWifiJoinArgs(const String &input, String &ssid, String &password);
+void stopScpiTcpServer();
+bool startScpiTcpServer();
+const char *scpiTcpStatusText();
+void processIncomingScpi(Stream &input, String &buffer, Print &output);
+void runScpiTcpServer();
 
 void sendAck() {
   if (ackEnabled) {
-    Serial.println(F("OK"));
+    SCPI_OUT.println(F("OK"));
   }
 }
 
 void setError(ScpiError err) {
   lastError = err;
   if (ackEnabled) {
-    Serial.println(F("ERR"));
+    SCPI_OUT.println(F("ERR"));
   }
 }
 
@@ -329,34 +345,34 @@ bool isModeBlockedByRadio(uint8_t physicalIndex, GpioMode mode) {
 }
 
 void printModeStatus(uint8_t physicalIndex) {
-  Serial.print(modeToText(pinModes[physicalIndex]));
+  SCPI_OUT.print(modeToText(pinModes[physicalIndex]));
   if (isModeBlockedByRadio(physicalIndex, pinModes[physicalIndex])) {
-    Serial.print(F(",NAVAIL,RADIO"));
+    SCPI_OUT.print(F(",NAVAIL,RADIO"));
   }
-  Serial.println();
+  SCPI_OUT.println();
 }
 
 void printCapabilities(uint8_t physicalIndex) {
   bool first = true;
   if (pinSupports(physicalIndex, CAP_IN)) {
-    Serial.print(F("IN"));
+    SCPI_OUT.print(F("IN"));
     first = false;
   }
   if (pinSupports(physicalIndex, CAP_OUT)) {
-    if (!first) Serial.print(",");
-    Serial.print(F("OUT"));
+    if (!first) SCPI_OUT.print(",");
+    SCPI_OUT.print(F("OUT"));
     first = false;
   }
   if (pinSupports(physicalIndex, CAP_PULLUP)) {
-    if (!first) Serial.print(",");
-    Serial.print(F("PULLUP"));
+    if (!first) SCPI_OUT.print(",");
+    SCPI_OUT.print(F("PULLUP"));
     first = false;
   }
   if (pinSupports(physicalIndex, CAP_ANA)) {
-    if (!first) Serial.print(",");
-    Serial.print(F("ANA"));
+    if (!first) SCPI_OUT.print(",");
+    SCPI_OUT.print(F("ANA"));
   }
-  Serial.println();
+  SCPI_OUT.println();
 }
 
 void onGpioModeChange(uint8_t gpioNum, GpioMode mode) {
@@ -511,6 +527,7 @@ bool setWifiEnabled(bool enabled) {
     return true;
   }
 
+  stopScpiTcpServer();
   WiFi.scanDelete();
   WiFi.disconnect(true, false);
   WiFi.mode(WIFI_OFF);
@@ -586,6 +603,111 @@ bool parseWifiJoinArgs(const String &input, String &ssid, String &password) {
   }
 
   return ssid.length() > 0;
+}
+
+void stopScpiTcpServer() {
+  if (scpiTcpClient) {
+    scpiTcpClient.stop();
+  }
+  if (scpiTcpServer != nullptr) {
+    scpiTcpServer->stop();
+    delete scpiTcpServer;
+    scpiTcpServer = nullptr;
+  }
+  scpiTcpEnabled = false;
+  socketBuffer = "";
+  scpiTcpLastActivity = 0;
+}
+
+bool startScpiTcpServer() {
+  if (radioMode == RADIO_OFF || !WiFi.isConnected()) {
+    return false;
+  }
+
+  stopScpiTcpServer();
+  scpiTcpServer = new WiFiServer(scpiTcpPort);
+  if (scpiTcpServer == nullptr) {
+    return false;
+  }
+
+  scpiTcpServer->begin();
+  scpiTcpServer->setNoDelay(true);
+  scpiTcpEnabled = true;
+  scpiTcpLastActivity = millis();
+  return true;
+}
+
+const char *scpiTcpStatusText() {
+  if (!scpiTcpEnabled) {
+    return "STOPPED";
+  }
+  if (radioMode == RADIO_OFF || !WiFi.isConnected()) {
+    return "NAVAIL,WIFI";
+  }
+  if (scpiTcpClient && scpiTcpClient.connected()) {
+    return "CONNECTED";
+  }
+  return "LISTENING";
+}
+
+void processIncomingScpi(Stream &input, String &buffer, Print &output) {
+  while (input.available() > 0) {
+    char c = (char)input.read();
+    if (c == '\n') {
+      Print *previousOut = gScpiOut;
+      gScpiOut = &output;
+      processCommand(buffer);
+      gScpiOut = previousOut;
+      buffer = "";
+    } else if (c != '\r') {
+      if (buffer.length() < 180) {
+        buffer += c;
+      }
+    }
+  }
+}
+
+void runScpiTcpServer() {
+  if (!scpiTcpEnabled) {
+    return;
+  }
+
+  if (radioMode == RADIO_OFF || !WiFi.isConnected()) {
+    if (scpiTcpClient) {
+      scpiTcpClient.stop();
+    }
+    socketBuffer = "";
+    return;
+  }
+
+  if (!(scpiTcpClient && scpiTcpClient.connected())) {
+    if (scpiTcpClient) {
+      scpiTcpClient.stop();
+    }
+    if (scpiTcpServer != nullptr) {
+      WiFiClient incoming = scpiTcpServer->available();
+      if (incoming) {
+        scpiTcpClient = incoming;
+        scpiTcpClient.setNoDelay(true);
+        socketBuffer = "";
+        scpiTcpLastActivity = millis();
+      }
+    }
+  }
+
+  if (!(scpiTcpClient && scpiTcpClient.connected())) {
+    return;
+  }
+
+  if (scpiTcpClient.available() > 0) {
+    scpiTcpLastActivity = millis();
+    processIncomingScpi(scpiTcpClient, socketBuffer, scpiTcpClient);
+  }
+
+  if (millis() - scpiTcpLastActivity > SCPI_CLIENT_IDLE_MS) {
+    scpiTcpClient.stop();
+    socketBuffer = "";
+  }
 }
 
 bool resolvePhysicalPin(const String &token, int &physicalIndex) {
@@ -1078,11 +1200,14 @@ void resetDevice() {
 
   lastError = ERR_NONE;
   ackEnabled = true;
+  gScpiOut = &Serial;
   setWifiEnabled(false);
   lastWifiScanCount = -1;
   lastWifiTargetSsid = "";
   lastWifiFailure = "";
   lastRadioReason = "";
+  socketBuffer = "";
+  scpiTcpPort = DEFAULT_SCPI_TCP_PORT;
 
   currentAnalogChannel = 0;
   scanCount = 0;
@@ -1144,7 +1269,7 @@ void processCommand(String &cmd) {
   }
 
   if (cmd == F("*IDN?")) {
-    Serial.println(F("OpenSCPI-Lab,WEMOS-D1-R32,0.1-ALPHA"));
+    SCPI_OUT.println(F("OpenSCPI-Lab,WEMOS-D1-R32,0.1-ALPHA"));
     return;
   }
   if (cmd == F("*RST")) {
@@ -1153,7 +1278,7 @@ void processCommand(String &cmd) {
     return;
   }
   if (cmd == F("*OPC?")) {
-    Serial.println((acqState == ACQ_IDLE || acqState == ACQ_DONE) ? F("1") : F("0"));
+    SCPI_OUT.println((acqState == ACQ_IDLE || acqState == ACQ_DONE) ? F("1") : F("0"));
     return;
   }
   if (cmd == F("*CLS")) {
@@ -1164,13 +1289,13 @@ void processCommand(String &cmd) {
 
   if (cmd == F("SYST:ERR?")) {
     switch (lastError) {
-      case ERR_NONE: Serial.println(F("0,\"No error\"")); break;
-      case ERR_CMD_UNKNOWN: Serial.println(F("-100,\"Command error\"")); break;
-      case ERR_PARAM_RANGE: Serial.println(F("-222,\"Data out of range\"")); break;
-      case ERR_EXECUTION: Serial.println(F("-200,\"Execution error\"")); break;
-      case ERR_TIMEOUT: Serial.println(F("-250,\"Timeout error\"")); break;
-      case ERR_MODE: Serial.println(F("-221,\"Settings conflict\"")); break;
-      default: Serial.println(F("-300,\"Device-specific error\"")); break;
+      case ERR_NONE: SCPI_OUT.println(F("0,\"No error\"")); break;
+      case ERR_CMD_UNKNOWN: SCPI_OUT.println(F("-100,\"Command error\"")); break;
+      case ERR_PARAM_RANGE: SCPI_OUT.println(F("-222,\"Data out of range\"")); break;
+      case ERR_EXECUTION: SCPI_OUT.println(F("-200,\"Execution error\"")); break;
+      case ERR_TIMEOUT: SCPI_OUT.println(F("-250,\"Timeout error\"")); break;
+      case ERR_MODE: SCPI_OUT.println(F("-221,\"Settings conflict\"")); break;
+      default: SCPI_OUT.println(F("-300,\"Device-specific error\"")); break;
     }
     lastError = ERR_NONE;
     return;
@@ -1192,17 +1317,17 @@ void processCommand(String &cmd) {
     return;
   }
   if (cmd == F("SYST:ACK?")) {
-    Serial.println(ackEnabled ? F("1") : F("0"));
+    SCPI_OUT.println(ackEnabled ? F("1") : F("0"));
     return;
   }
 
   if (cmd == F("SYST:CAP?")) {
-    Serial.println(F("ESP32,GPIO_MODE,GPIO_CAP,ADC12,ADC_MV,PWM_LEDC_ANY,PWM_FREQ,DAC2,SERVO_LEDC,TRIG,ACQ,ADC2_GUARD,WIFI_CTRL,WIFI_SCAN"));
+    SCPI_OUT.println(F("ESP32,GPIO_MODE,GPIO_CAP,ADC12,ADC_MV,PWM_LEDC_ANY,PWM_FREQ,DAC2,SERVO_LEDC,TRIG,ACQ,ADC2_GUARD,WIFI_CTRL,WIFI_SCAN,NET_SCPI_TCP"));
     return;
   }
 
   if (cmd == F("SYST:PINMAP?")) {
-    Serial.println(F("DCH0=GPIO26,DCH1=GPIO25,DCH2=GPIO17,DCH3=GPIO16,DCH4=GPIO27,DCH5=GPIO14,DCH6=GPIO12,DCH7=GPIO13,DCH8=GPIO5,DCH9=GPIO23,DCH10=GPIO19,DCH11=GPIO18;AN0=GPIO2,AN1=GPIO4,AN2=GPIO35,AN3=GPIO34,AN4=GPIO36,AN5=GPIO39,AN6=GPIO26,AN7=GPIO25,AN8=GPIO27,AN9=GPIO14,AN10=GPIO12,AN11=GPIO13"));
+    SCPI_OUT.println(F("DCH0=GPIO26,DCH1=GPIO25,DCH2=GPIO17,DCH3=GPIO16,DCH4=GPIO27,DCH5=GPIO14,DCH6=GPIO12,DCH7=GPIO13,DCH8=GPIO5,DCH9=GPIO23,DCH10=GPIO19,DCH11=GPIO18;AN0=GPIO2,AN1=GPIO4,AN2=GPIO35,AN3=GPIO34,AN4=GPIO36,AN5=GPIO39,AN6=GPIO26,AN7=GPIO25,AN8=GPIO27,AN9=GPIO14,AN10=GPIO12,AN11=GPIO13"));
     return;
   }
 
@@ -1225,7 +1350,7 @@ void processCommand(String &cmd) {
   }
 
   if (cmd == F("SYST:WIFI:STAT?")) {
-    Serial.println(wifiStatusText());
+    SCPI_OUT.println(wifiStatusText());
     return;
   }
 
@@ -1248,15 +1373,15 @@ void processCommand(String &cmd) {
     }
 
     lastWifiFailure = "";
-    Serial.println(F("SSID,RSSI,AUTH,CHAN"));
+    SCPI_OUT.println(F("SSID,RSSI,AUTH,CHAN"));
     for (int i = 0; i < networkCount; ++i) {
-      Serial.print(WiFi.SSID(i));
-      Serial.print(",");
-      Serial.print(WiFi.RSSI(i));
-      Serial.print(",");
-      Serial.print(wifiAuthModeText(WiFi.encryptionType(i)));
-      Serial.print(",");
-      Serial.println(WiFi.channel(i));
+      SCPI_OUT.print(WiFi.SSID(i));
+      SCPI_OUT.print(",");
+      SCPI_OUT.print(WiFi.RSSI(i));
+      SCPI_OUT.print(",");
+      SCPI_OUT.print(wifiAuthModeText(WiFi.encryptionType(i)));
+      SCPI_OUT.print(",");
+      SCPI_OUT.println(WiFi.channel(i));
     }
     WiFi.scanDelete();
     return;
@@ -1316,9 +1441,11 @@ void processCommand(String &cmd) {
 
   if (cmd == F("SYST:WIFI:DISC")) {
     if (radioMode == RADIO_OFF) {
+      stopScpiTcpServer();
       sendAck();
       return;
     }
+    stopScpiTcpServer();
     WiFi.disconnect(false, false);
     lastWifiStatusCode = WiFi.status();
     lastWifiFailure = "";
@@ -1328,84 +1455,124 @@ void processCommand(String &cmd) {
 
   if (cmd == F("SYST:WIFI:IP?")) {
     if (radioMode == RADIO_OFF || !WiFi.isConnected()) {
-      Serial.println(F("NONE"));
+      SCPI_OUT.println(F("NONE"));
       return;
     }
-    Serial.println(WiFi.localIP());
+    SCPI_OUT.println(WiFi.localIP());
     return;
   }
 
   if (cmd == F("SYST:WIFI:RSSI?")) {
     if (radioMode == RADIO_OFF || !WiFi.isConnected()) {
-      Serial.println(F("NONE"));
+      SCPI_OUT.println(F("NONE"));
       return;
     }
-    Serial.println(WiFi.RSSI());
+    SCPI_OUT.println(WiFi.RSSI());
     return;
   }
 
   if (cmd == F("SYST:WIFI:DBG:STAT?")) {
-    Serial.print(F("RADIO="));
-    Serial.print(radioMode == RADIO_OFF ? F("OFF") : F("ON"));
-    Serial.print(F(",STAT="));
-    Serial.print(wifiStatusText());
-    Serial.print(F(",WIFI_STATUS="));
-    Serial.print(wifiLinkStatusText(lastWifiStatusCode));
-    Serial.print(F(",CODE="));
-    Serial.println((int)lastWifiStatusCode);
+    SCPI_OUT.print(F("RADIO="));
+    SCPI_OUT.print(radioMode == RADIO_OFF ? F("OFF") : F("ON"));
+    SCPI_OUT.print(F(",STAT="));
+    SCPI_OUT.print(wifiStatusText());
+    SCPI_OUT.print(F(",WIFI_STATUS="));
+    SCPI_OUT.print(wifiLinkStatusText(lastWifiStatusCode));
+    SCPI_OUT.print(F(",CODE="));
+    SCPI_OUT.println((int)lastWifiStatusCode);
     return;
   }
 
   if (cmd == F("SYST:WIFI:DBG:SCAN:LAST?")) {
-    Serial.println(lastWifiScanCount);
+    SCPI_OUT.println(lastWifiScanCount);
     return;
   }
 
   if (cmd == F("SYST:WIFI:DBG:SSID?")) {
     if (lastWifiTargetSsid.length() == 0) {
-      Serial.println(F("NONE"));
+      SCPI_OUT.println(F("NONE"));
     } else {
-      Serial.println(lastWifiTargetSsid);
+      SCPI_OUT.println(lastWifiTargetSsid);
     }
     return;
   }
 
   if (cmd == F("SYST:WIFI:DBG:FAIL?")) {
     if (lastWifiFailure.length() == 0) {
-      Serial.println(F("NONE"));
+      SCPI_OUT.println(F("NONE"));
     } else {
-      Serial.println(lastWifiFailure);
+      SCPI_OUT.println(lastWifiFailure);
     }
     return;
   }
 
   if (cmd == F("SYST:WIFI:DBG:DIAG?")) {
-    Serial.print(F("RADIO="));
-    Serial.print(radioMode == RADIO_OFF ? F("OFF") : F("ON"));
-    Serial.print(F(",STAT="));
-    Serial.print(wifiStatusText());
-    Serial.print(F(",WIFI_STATUS="));
-    Serial.print(wifiLinkStatusText(lastWifiStatusCode));
-    Serial.print(F(",TARGET="));
+    SCPI_OUT.print(F("RADIO="));
+    SCPI_OUT.print(radioMode == RADIO_OFF ? F("OFF") : F("ON"));
+    SCPI_OUT.print(F(",STAT="));
+    SCPI_OUT.print(wifiStatusText());
+    SCPI_OUT.print(F(",WIFI_STATUS="));
+    SCPI_OUT.print(wifiLinkStatusText(lastWifiStatusCode));
+    SCPI_OUT.print(F(",TARGET="));
     if (lastWifiTargetSsid.length() == 0) {
-      Serial.print(F("NONE"));
+      SCPI_OUT.print(F("NONE"));
     } else {
-      Serial.print(lastWifiTargetSsid);
+      SCPI_OUT.print(lastWifiTargetSsid);
     }
-    Serial.print(F(",IP="));
-    if (WiFi.isConnected()) Serial.print(WiFi.localIP());
-    else Serial.print(F("NONE"));
-    Serial.print(F(",RSSI="));
-    if (WiFi.isConnected()) Serial.print(WiFi.RSSI());
-    else Serial.print(F("NONE"));
-    Serial.print(F(",SCAN_LAST="));
-    Serial.print(lastWifiScanCount);
-    Serial.print(F(",LAST_FAIL="));
+    SCPI_OUT.print(F(",IP="));
+    if (WiFi.isConnected()) SCPI_OUT.print(WiFi.localIP());
+    else SCPI_OUT.print(F("NONE"));
+    SCPI_OUT.print(F(",RSSI="));
+    if (WiFi.isConnected()) SCPI_OUT.print(WiFi.RSSI());
+    else SCPI_OUT.print(F("NONE"));
+    SCPI_OUT.print(F(",SCAN_LAST="));
+    SCPI_OUT.print(lastWifiScanCount);
+    SCPI_OUT.print(F(",LAST_FAIL="));
     if (lastWifiFailure.length() == 0) {
-      Serial.println(F("NONE"));
+      SCPI_OUT.println(F("NONE"));
     } else {
-      Serial.println(lastWifiFailure);
+      SCPI_OUT.println(lastWifiFailure);
     }
+    return;
+  }
+
+  if (cmd.startsWith(F("SYST:NET:SCPI:PORT "))) {
+    long value = 0;
+    if (!parseIntStrict(cmd.substring(19), value) || value < 1 || value > 65535) {
+      setError(ERR_PARAM_RANGE);
+      return;
+    }
+    if (scpiTcpEnabled) {
+      setError(ERR_MODE);
+      return;
+    }
+    scpiTcpPort = (uint16_t)value;
+    sendAck();
+    return;
+  }
+
+  if (cmd == F("SYST:NET:SCPI:PORT?")) {
+    SCPI_OUT.println(scpiTcpPort);
+    return;
+  }
+
+  if (cmd == F("SYST:NET:SCPI:START")) {
+    if (!startScpiTcpServer()) {
+      setError(ERR_MODE);
+      return;
+    }
+    sendAck();
+    return;
+  }
+
+  if (cmd == F("SYST:NET:SCPI:STOP")) {
+    stopScpiTcpServer();
+    sendAck();
+    return;
+  }
+
+  if (cmd == F("SYST:NET:SCPI:STAT?")) {
+    SCPI_OUT.println(scpiTcpStatusText());
     return;
   }
 
@@ -1432,9 +1599,9 @@ void processCommand(String &cmd) {
     return;
   }
   if (cmd == F("CAL:REF?")) {
-    if (refMode == REF_DEF) Serial.println(F("DEF"));
-    else if (refMode == REF_INT) Serial.println(F("INT"));
-    else Serial.println(F("EXT"));
+    if (refMode == REF_DEF) SCPI_OUT.println(F("DEF"));
+    else if (refMode == REF_INT) SCPI_OUT.println(F("INT"));
+    else SCPI_OUT.println(F("EXT"));
     return;
   }
 
@@ -1449,7 +1616,7 @@ void processCommand(String &cmd) {
     return;
   }
   if (cmd == F("CAL:VREF?")) {
-    Serial.println(vRef, 3);
+    SCPI_OUT.println(vRef, 3);
     return;
   }
 
@@ -1465,7 +1632,7 @@ void processCommand(String &cmd) {
     return;
   }
   if (cmd == F("CONF:ADC:RES?")) {
-    Serial.println(adcResolutionBits);
+    SCPI_OUT.println(adcResolutionBits);
     return;
   }
 
@@ -1480,8 +1647,8 @@ void processCommand(String &cmd) {
     return;
   }
   if (cmd == F("CONF:VOLT?")) {
-    Serial.print(F("AN"));
-    Serial.println(currentAnalogChannel);
+    SCPI_OUT.print(F("AN"));
+    SCPI_OUT.println(currentAnalogChannel);
     return;
   }
 
@@ -1494,7 +1661,7 @@ void processCommand(String &cmd) {
     if (!isAnalogChannelAccessible(analogChannel)) {
       return;
     }
-    Serial.println(readRaw((uint8_t)analogChannel));
+    SCPI_OUT.println(readRaw((uint8_t)analogChannel));
     return;
   }
 
@@ -1509,7 +1676,7 @@ void processCommand(String &cmd) {
     if (!isAnalogChannelAccessible(analogChannel)) {
       return;
     }
-    Serial.println(readMilliVolts((uint8_t)analogChannel));
+    SCPI_OUT.println(readMilliVolts((uint8_t)analogChannel));
     return;
   }
 
@@ -1524,7 +1691,7 @@ void processCommand(String &cmd) {
     if (!isAnalogChannelAccessible(analogChannel)) {
       return;
     }
-    Serial.println(readVolt((uint8_t)analogChannel), 4);
+    SCPI_OUT.println(readVolt((uint8_t)analogChannel), 4);
     return;
   }
 
@@ -1543,13 +1710,13 @@ void processCommand(String &cmd) {
   }
   if (cmd == F("ROUT:SCAN?")) {
     for (uint8_t i = 0; i < scanCount; ++i) {
-      Serial.print(F("AN"));
-      Serial.print(scanList[i]);
+      SCPI_OUT.print(F("AN"));
+      SCPI_OUT.print(scanList[i]);
       if (i + 1 < scanCount) {
-        Serial.print(",");
+        SCPI_OUT.print(",");
       }
     }
-    Serial.println();
+    SCPI_OUT.println();
     return;
   }
 
@@ -1651,7 +1818,7 @@ void processCommand(String &cmd) {
       setError(ERR_MODE);
       return;
     }
-    Serial.println(digitalRead(kPhysicalPins[physicalIndex].gpio));
+    SCPI_OUT.println(digitalRead(kPhysicalPins[physicalIndex].gpio));
     return;
   }
 
@@ -1692,7 +1859,7 @@ void processCommand(String &cmd) {
       setError(ERR_MODE);
       return;
     }
-    Serial.println(pinDigitalStates[physicalIndex] ? F("1") : F("0"));
+    SCPI_OUT.println(pinDigitalStates[physicalIndex] ? F("1") : F("0"));
     return;
   }
 
@@ -1740,7 +1907,7 @@ void processCommand(String &cmd) {
       setError(ERR_PARAM_RANGE);
       return;
     }
-    Serial.println(pinPwmValue[physicalIndex]);
+    SCPI_OUT.println(pinPwmValue[physicalIndex]);
     return;
   }
 
@@ -1786,7 +1953,7 @@ void processCommand(String &cmd) {
       setError(ERR_PARAM_RANGE);
       return;
     }
-    Serial.println(pinPwmFreq[physicalIndex]);
+    SCPI_OUT.println(pinPwmFreq[physicalIndex]);
     return;
   }
 
@@ -1826,7 +1993,7 @@ void processCommand(String &cmd) {
       setError(ERR_PARAM_RANGE);
       return;
     }
-    Serial.println(dacValue[dacChannel]);
+    SCPI_OUT.println(dacValue[dacChannel]);
     return;
   }
 
@@ -1869,7 +2036,7 @@ void processCommand(String &cmd) {
       setError(ERR_PARAM_RANGE);
       return;
     }
-    Serial.println(servoAngle[pwmChannel]);
+    SCPI_OUT.println(servoAngle[pwmChannel]);
     return;
   }
 
@@ -1879,7 +2046,7 @@ void processCommand(String &cmd) {
       setError(ERR_PARAM_RANGE);
       return;
     }
-    Serial.println(servoAttached[pwmChannel] ? F("1") : F("0"));
+    SCPI_OUT.println(servoAttached[pwmChannel] ? F("1") : F("0"));
     return;
   }
 
@@ -1896,9 +2063,9 @@ void processCommand(String &cmd) {
     return;
   }
   if (cmd == F("TRIG:SOUR?")) {
-    if (trigMode == TRIG_IMM) Serial.println(F("IMM"));
-    else if (trigMode == TRIG_ANA) Serial.println(F("ANA"));
-    else Serial.println(F("DIG"));
+    if (trigMode == TRIG_IMM) SCPI_OUT.println(F("IMM"));
+    else if (trigMode == TRIG_ANA) SCPI_OUT.println(F("ANA"));
+    else SCPI_OUT.println(F("DIG"));
     return;
   }
 
@@ -1914,7 +2081,7 @@ void processCommand(String &cmd) {
     return;
   }
   if (cmd == F("TRIG:SLOP?")) {
-    Serial.println(trigSlope == SLOPE_POS ? F("POS") : F("NEG"));
+    SCPI_OUT.println(trigSlope == SLOPE_POS ? F("POS") : F("NEG"));
     return;
   }
 
@@ -1947,16 +2114,16 @@ void processCommand(String &cmd) {
 
   if (cmd == F("TRIG:CHAN?")) {
     if (trigMode == TRIG_ANA) {
-      Serial.print(F("AN"));
-      Serial.println(trigAnalogChannel);
+      SCPI_OUT.print(F("AN"));
+      SCPI_OUT.println(trigAnalogChannel);
       return;
     }
     if (trigMode == TRIG_DIG) {
-      Serial.print(F("GPIO"));
-      Serial.println(kPhysicalPins[trigDigitalPinIndex].gpio);
+      SCPI_OUT.print(F("GPIO"));
+      SCPI_OUT.println(kPhysicalPins[trigDigitalPinIndex].gpio);
       return;
     }
-    Serial.println(F("NONE"));
+    SCPI_OUT.println(F("NONE"));
     return;
   }
 
@@ -1975,7 +2142,7 @@ void processCommand(String &cmd) {
     return;
   }
   if (cmd == F("TRIG:LEV?")) {
-    Serial.println(trigLevel, 3);
+    SCPI_OUT.println(trigLevel, 3);
     return;
   }
 
@@ -1990,7 +2157,7 @@ void processCommand(String &cmd) {
     return;
   }
   if (cmd == F("TRIG:TOUT?")) {
-    Serial.println(trigTimeout);
+    SCPI_OUT.println(trigTimeout);
     return;
   }
 
@@ -2006,7 +2173,7 @@ void processCommand(String &cmd) {
     return;
   }
   if (cmd == F("ACQ:POIN?")) {
-    Serial.println(acqPoints);
+    SCPI_OUT.println(acqPoints);
     return;
   }
 
@@ -2021,16 +2188,16 @@ void processCommand(String &cmd) {
     return;
   }
   if (cmd == F("ACQ:TINT?")) {
-    Serial.println(acqTStep);
+    SCPI_OUT.println(acqTStep);
     return;
   }
 
   if (cmd == F("ACQ:STAT?")) {
-    if (acqState == ACQ_IDLE) Serial.println(F("IDLE"));
-    else if (acqState == ACQ_PREFILL) Serial.println(F("PREFILL"));
-    else if (acqState == ACQ_ARMED) Serial.println(F("ARMED"));
-    else if (acqState == ACQ_POST) Serial.println(F("POST"));
-    else Serial.println(F("DONE"));
+    if (acqState == ACQ_IDLE) SCPI_OUT.println(F("IDLE"));
+    else if (acqState == ACQ_PREFILL) SCPI_OUT.println(F("PREFILL"));
+    else if (acqState == ACQ_ARMED) SCPI_OUT.println(F("ARMED"));
+    else if (acqState == ACQ_POST) SCPI_OUT.println(F("POST"));
+    else SCPI_OUT.println(F("DONE"));
     return;
   }
 
@@ -2097,12 +2264,12 @@ void processCommand(String &cmd) {
     for (uint16_t row = 0; row < acqPoints; ++row) {
       for (uint8_t ch = 0; ch < scanCount; ++ch) {
         float value = ((float)acqBuffer[(index * scanCount) + ch] * vRef) / (float)rawMaxValue();
-        Serial.print(value, 4);
+        SCPI_OUT.print(value, 4);
         if (ch + 1 < scanCount) {
-          Serial.print(",");
+          SCPI_OUT.print(",");
         }
       }
-      Serial.println();
+      SCPI_OUT.println();
       index = (index + 1) % acqPoints;
     }
     acqState = ACQ_IDLE;
@@ -2118,17 +2285,7 @@ void setup() {
 }
 
 void loop() {
-  while (Serial.available() > 0) {
-    char c = (char)Serial.read();
-    if (c == '\n') {
-      processCommand(serialBuffer);
-      serialBuffer = "";
-    } else if (c != '\r') {
-      if (serialBuffer.length() < 180) {
-        serialBuffer += c;
-      }
-    }
-  }
-
+  processIncomingScpi(Serial, serialBuffer, Serial);
+  runScpiTcpServer();
   runAcquisitionEngine();
 }

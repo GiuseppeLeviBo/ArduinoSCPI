@@ -133,6 +133,18 @@ GPIO:MODE GPIO35,ANA
 GPIO:MODE? GPIO35
 ```
 
+Differenza tra query:
+
+- `GPIO:CAP?` dice cosa il pin puo' fare in generale
+- `GPIO:MODE?` dice in che stato operativo si trova adesso il pin
+
+Esempi:
+
+- `GPIO:CAP? GPIO35` -> `IN,ANA`
+- `GPIO:MODE? GPIO35` -> `ANA`
+- con Wi-Fi attivo su un pin `ADC2` gia' in analogico: `GPIO:MODE? GPIO26` -> `ANA,NAVAIL,RADIO`
+
+
 Modalità disponibili:
 
 - `IN`
@@ -287,6 +299,8 @@ Note:
 
 Comportamento GPIO con `ADC2` e radio attiva:
 
+
+
 ```text
 GPIO:MODE GPIO26,ANA
 SYST:ERR?
@@ -298,6 +312,41 @@ Risposte attese:
 - `GPIO:MODE GPIO26,ANA` -> `ERR`
 - `SYST:ERR?` -> `-221,"Settings conflict"`
 - se il pin era gia' in analogico quando il Wi-Fi viene acceso: `GPIO:MODE? GPIO26` -> `ANA,NAVAIL,RADIO`
+
+### SCPI TCP
+
+Server raw socket per SCPI su rete:
+
+```text
+SYST:NET:SCPI:PORT 5025
+SYST:NET:SCPI:PORT?
+SYST:NET:SCPI:START
+SYST:NET:SCPI:STOP
+SYST:NET:SCPI:STAT?
+```
+
+Stati osservabili:
+
+- `STOPPED`: server non attivo
+- `LISTENING`: server attivo, in attesa di client
+- `CONNECTED`: un client TCP e' collegato
+- `NAVAIL,WIFI`: server non disponibile per stato rete
+
+Regole operative attuali:
+
+- il server usa `raw TCP socket`
+- porta default: `5025`
+- un solo client alla volta
+- `SYST:WIFI:OFF` spegne il server
+- `SYST:WIFI:DISC` spegne il server
+
+Nota pratica per il monitor socket:
+
+```text
+SYST:ACK OFF
+```
+
+Conviene inviarlo all'inizio della sessione o della macro per evitare che gli `OK` dei comandi non-query si mischino alle risposte delle query.
 
 ## 5. Esempi pratici
 
@@ -395,3 +444,4 @@ Firmware testato con successo in modo pratico su board:
 - blocco `ADC2` con Wi-Fi attivo e rilascio immediato con `SYST:WIFI:OFF`
 
 Questo documento descrive lo stato reale dello sketch corrente, non una roadmap futura.
+
